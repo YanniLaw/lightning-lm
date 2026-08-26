@@ -1,3 +1,6 @@
+include(${PROJECT_SOURCE_DIR}/cmake/ui_build.cmake)
+lightning_get_ui_sources(LIGHTNING_UI_SOURCES "${LIGHTNING_WITH_PANGOLIN}")
+
 add_library(${PROJECT_NAME}.libs SHARED
         common/nav_state.cc
         common/constant.h
@@ -32,11 +35,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         utils/timer.cc
         utils/pointcloud_utils.cc
 
-        ui/pangolin_window.cc
-        ui/pangolin_window_impl.cc
-        ui/ui_car.cc
-        ui/ui_cloud.cc
-        ui/ui_trajectory.cc
+        ${LIGHTNING_UI_SOURCES}
 
         core/system/slam.cc
         core/system/loc_system.cc

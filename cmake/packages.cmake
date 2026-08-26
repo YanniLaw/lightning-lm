@@ -2,8 +2,10 @@ find_package(glog REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(yaml-cpp REQUIRED)
-find_package(Pangolin REQUIRED)
-find_package(OpenGL REQUIRED)
+if (LIGHTNING_WITH_PANGOLIN)
+    find_package(Pangolin REQUIRED)
+    find_package(OpenGL REQUIRED)
+endif ()
 find_package(pcl_conversions REQUIRED)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -12,6 +14,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(message_filters REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -25,12 +28,12 @@ if (OPENMP_FOUND)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif ()
 
-if (BUILD_WITH_MARCH_NATIVE)
-    add_compile_options(-march=native)
-else ()
-    add_definitions(-msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2")
-endif ()
+include(${PROJECT_SOURCE_DIR}/cmake/architecture_flags.cmake)
+lightning_get_architecture_compile_options(
+        LIGHTNING_ARCHITECTURE_COMPILE_OPTIONS
+        "${CMAKE_SYSTEM_PROCESSOR}"
+        "${BUILD_WITH_MARCH_NATIVE}")
+add_compile_options(${LIGHTNING_ARCHITECTURE_COMPILE_OPTIONS})
 
 include_directories(
         ${OpenCV_INCLUDE_DIRS}
@@ -61,7 +64,7 @@ include_directories(
 set(third_party_libs
         ${PCL_LIBRARIES}
         ${OpenCV_LIBS}
-        ${Pangolin_LIBRARIES}
+        #${Pangolin_LIBRARIES}
         glog gflags
         ${yaml-cpp_LIBRARIES}
         ${pcl_conversions_LIBRARIES}
@@ -69,3 +72,6 @@ set(third_party_libs
         ${rosbag2_cpp_LIBRARIES}
 )
 
+if (LIGHTNING_WITH_PANGOLIN)
+    list(APPEND third_party_libs ${Pangolin_LIBRARIES} OpenGL::GL)
+endif ()

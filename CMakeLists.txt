@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 
 project(lightning)
 
+option(LIGHTNING_WITH_PANGOLIN "Build the Pangolin visualization UI" OFF)
+option(BUILD_WITH_MARCH_NATIVE "Optimize for the build machine CPU" OFF)
+
 # Default to C++17
 if (NOT CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 17)
@@ -58,5 +61,29 @@ install(DIRECTORY config
 add_subdirectory(thirdparty/livox_ros_driver)
 
 add_subdirectory(src)
+
+if (BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    add_test(
+            NAME lightning_portability_cmake
+            COMMAND ${CMAKE_COMMAND}
+                    -DLIGHTNING_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+                    -P ${PROJECT_SOURCE_DIR}/tests/cmake/portability_test.cmake)
+
+    add_test(
+            NAME lightning_package_manifest
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_package_manifest.py)
+
+    if (NOT LIGHTNING_WITH_PANGOLIN)
+        add_executable(lightning_headless_ui_test
+                tests/pangolin_window_headless_test.cc)
+        target_link_libraries(lightning_headless_ui_test
+                ${PROJECT_NAME}.libs)
+        add_test(
+                NAME lightning_headless_ui
+                COMMAND lightning_headless_ui_test)
+    endif ()
+endif ()
 
 ament_package()

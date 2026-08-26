@@ -8,13 +8,20 @@
     <license>TODO: License declaration</license>
 
     <buildtool_depend>ament_cmake</buildtool_depend>
+    <buildtool_depend>ament_cmake_auto</buildtool_depend>
     
     <build_depend>rosidl_default_generators</build_depend>
     <exec_depend>rosidl_default_runtime</exec_depend>
     
-    <depend>scrubber_common</depend>
-    <depend>agibot_robot</depend>
+    <depend>builtin_interfaces</depend>
+    <depend>eigen</depend>
+    <depend>libgoogle-glog-dev</depend>
+    <depend>libgflags-dev</depend>
+    <depend>libopencv-dev</depend>
+    <depend>libpcl-all-dev</depend>
+    <depend>libtbb-dev</depend>
     <depend>rclcpp</depend>
+    <depend>rosbag2_cpp</depend>
     <depend>std_msgs</depend>
     <depend>geometry_msgs</depend>
     <depend>sensor_msgs</depend>
@@ -26,6 +33,7 @@
     <depend>pcl_ros</depend>
     <depend>message_filters</depend>
     <depend>visualization_msgs</depend>
+    <depend>yaml-cpp</depend>
     
     <member_of_group>rosidl_interface_packages</member_of_group>
 

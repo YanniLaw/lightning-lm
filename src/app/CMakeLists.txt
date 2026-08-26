@@ -52,14 +52,16 @@ target_link_libraries(run_loc_online
         ${third_party_libs}
 )
 
-add_executable(test_ui
-        test_ui.cc
-)
+if (LIGHTNING_WITH_PANGOLIN)
+    add_executable(test_ui
+            test_ui.cc
+    )
 
-target_link_libraries(test_ui
-        ${PROJECT_NAME}.libs
-        ${third_party_libs}
-)
+    target_link_libraries(test_ui
+            ${PROJECT_NAME}.libs
+            ${third_party_libs}
+    )
+endif ()
 
 install(TARGETS run_slam_offline run_slam_online run_loc_offline run_loc_online
         DESTINATION lib/${PROJECT_NAME})
