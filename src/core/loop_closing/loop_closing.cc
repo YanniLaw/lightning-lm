@@ -76,6 +76,8 @@ void LoopClosing::HandleKF(Keyframe::Ptr kf) {
 
     cur_kf_ = kf;
     all_keyframes_.emplace_back(kf);
+    keyframes_by_id_[kf->GetID()] = kf;
+    keyframe_indices_[kf->GetID()] = all_keyframes_.size() - 1;
 
     // 检测回环候选
     DetectLoopCandidates();
@@ -91,6 +93,16 @@ void LoopClosing::HandleKF(Keyframe::Ptr kf) {
     PoseOptimization();
 
     last_kf_ = kf;
+}
+
+Keyframe::Ptr LoopClosing::FindKeyframe(unsigned long id) const {
+    const auto it = keyframes_by_id_.find(id);
+    return it == keyframes_by_id_.end() ? nullptr : it->second;
+}
+
+size_t LoopClosing::FindKeyframeIndex(unsigned long id) const {
+    const auto it = keyframe_indices_.find(id);
+    return it == keyframe_indices_.end() ? all_keyframes_.size() : it->second;
 }
 
 void LoopClosing::DetectLoopCandidates() {
@@ -168,17 +180,28 @@ void LoopClosing::ComputeLoopCandidates() {
 void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
     // LOG(INFO) << "aligning " << c.idx1_ << " with " << c.idx2_;
     const int submap_idx_range = 40;
-    auto kf1 = all_keyframes_.at(c.idx1_), kf2 = all_keyframes_.at(c.idx2_);
+    auto kf1 = FindKeyframe(c.idx1_);
+    auto kf2 = FindKeyframe(c.idx2_);
+    if (kf1 == nullptr || kf2 == nullptr) {
+        LOG(WARNING) << "skip loop candidate with missing keyframe: " << c.idx1_ << ", " << c.idx2_;
+        c.ndt_score_ = 0;
+        return;
+    }
 
-    auto build_submap = [this](int given_id, bool build_in_world) -> CloudPtr {
+    auto build_submap = [this](unsigned long given_id, bool build_in_world) -> CloudPtr {
         CloudPtr submap(new PointCloudType);
+        const size_t given_index = FindKeyframeIndex(given_id);
+        if (given_index == all_keyframes_.size()) {
+            return submap;
+        }
+
         for (int idx = -submap_idx_range; idx < submap_idx_range; idx += 4) {
-            int id = idx + given_id;
-            if (id < 0 || id >= all_keyframes_.size()) {
+            const int keyframe_index = static_cast<int>(given_index) + idx;
+            if (keyframe_index < 0 || keyframe_index >= static_cast<int>(all_keyframes_.size())) {
                 continue;
             }
 
-            auto kf = all_keyframes_[id];
+            auto kf = all_keyframes_[keyframe_index];
             CloudPtr cloud = kf->GetCloud();
 
             // RemoveGround(cloud, 0.1);
@@ -191,7 +214,7 @@ void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
             SE3 Twb = kf->GetOptPose();
 
             if (!build_in_world) {
-                Twb = all_keyframes_.at(given_id)->GetOptPose().inverse() * Twb;
+                Twb = all_keyframes_[given_index]->GetOptPose().inverse() * Twb;
             }
 
             CloudPtr cloud_trans(new PointCloudType);
@@ -259,19 +282,22 @@ void LoopClosing::PoseOptimization() {
     kf_vert_.emplace_back(v);
 
     /// 上一个关键帧的运动约束
-    for (int i = 1; i < 3; i++) {
-        int id = cur_kf_->GetID() - i;
-        if (id >= 0) {
-            auto last_kf = all_keyframes_[id];
-            auto e = std::make_shared<miao::EdgeSE3>();
-            e->SetVertex(0, optimizer_->GetVertex(last_kf->GetID()));
-            e->SetVertex(1, v);
-
-            SE3 motion = last_kf->GetLIOPose().inverse() * cur_kf_->GetLIOPose();
-            e->SetMeasurement(motion);
-            e->SetInformation(info_motion_);
-            optimizer_->AddEdge(e);
+    const size_t cur_index = FindKeyframeIndex(cur_kf_->GetID());
+    for (size_t i = 1; i < 3 && i <= cur_index; i++) {
+        auto last_kf = all_keyframes_[cur_index - i];
+        auto last_vertex = optimizer_->GetVertex(last_kf->GetID());
+        if (last_vertex == nullptr) {
+            continue;
         }
+
+        auto e = std::make_shared<miao::EdgeSE3>();
+        e->SetVertex(0, last_vertex);
+        e->SetVertex(1, v);
+
+        SE3 motion = last_kf->GetLIOPose().inverse() * cur_kf_->GetLIOPose();
+        e->SetMeasurement(motion);
+        e->SetInformation(info_motion_);
+        optimizer_->AddEdge(e);
     }
 
     if (options_.with_height_) {
@@ -285,9 +311,16 @@ void LoopClosing::PoseOptimization() {
 
     /// 回环的约束
     for (auto& c : candidates_) {
+        auto vertex1 = optimizer_->GetVertex(c.idx1_);
+        auto vertex2 = optimizer_->GetVertex(c.idx2_);
+        if (vertex1 == nullptr || vertex2 == nullptr) {
+            LOG(WARNING) << "skip loop constraint with missing vertex: " << c.idx1_ << ", " << c.idx2_;
+            continue;
+        }
+
         auto e = std::make_shared<miao::EdgeSE3>();
-        e->SetVertex(0, optimizer_->GetVertex(c.idx1_));
-        e->SetVertex(1, optimizer_->GetVertex(c.idx2_));
+        e->SetVertex(0, vertex1);
+        e->SetVertex(1, vertex2);
         e->SetMeasurement(c.Tij_);
         e->SetInformation(info_loops_);
 
@@ -334,7 +367,10 @@ void LoopClosing::PoseOptimization() {
     /// get results
     for (auto& vert : kf_vert_) {
         SE3 pose = vert->Estimate();
-        all_keyframes_[vert->GetId()]->SetOptPose(pose);
+        auto kf = FindKeyframe(vert->GetId());
+        if (kf != nullptr) {
+            kf->SetOptPose(pose);
+        }
     }
 
     if (loop_cb_) {

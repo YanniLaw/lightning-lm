@@ -12,6 +12,8 @@
 #include "core/graph/optimizer.h"
 #include "core/types/edge_se3.h"
 
+#include <unordered_map>
+
 namespace lightning {
 
 /**
@@ -70,12 +72,17 @@ class LoopClosing {
     /// 优化位姿
     void PoseOptimization();
 
+    Keyframe::Ptr FindKeyframe(unsigned long id) const;
+    size_t FindKeyframeIndex(unsigned long id) const;
+
     Options options_;
 
     Keyframe::Ptr last_kf_ = nullptr;
     Keyframe::Ptr last_loop_kf_ = nullptr;
     Keyframe::Ptr cur_kf_ = nullptr;
     std::vector<Keyframe::Ptr> all_keyframes_;
+    std::unordered_map<unsigned long, Keyframe::Ptr> keyframes_by_id_;
+    std::unordered_map<unsigned long, size_t> keyframe_indices_;
     std::vector<LoopCandidate> candidates_;
 
     AsyncMessageProcess<Keyframe::Ptr> kf_thread_;
