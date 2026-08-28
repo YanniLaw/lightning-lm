@@ -63,5 +63,11 @@ if (LIGHTNING_WITH_PANGOLIN)
     )
 endif ()
 
-install(TARGETS run_slam_offline run_slam_online run_loc_offline run_loc_online
-        DESTINATION lib/${PROJECT_NAME})
+install(TARGETS
+        run_frontend_offline
+        run_loop_offline
+        run_slam_offline
+        run_slam_online
+        run_loc_offline
+        run_loc_online
+        RUNTIME DESTINATION lib/${PROJECT_NAME})

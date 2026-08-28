@@ -7,6 +7,7 @@
 
 #include "core/system/loc_system.h"
 #include "ui/pangolin_window.h"
+#include "wrapper/ros_gflags.h"
 #include "wrapper/ros_utils.h"
 
 DEFINE_string(config, "./config/default.yaml", "配置文件");
@@ -17,10 +18,8 @@ int main(int argc, char** argv) {
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
 
-    google::ParseCommandLineFlags(&argc, &argv, true);
+    lightning::InitROSAndParseGFlags(argc, argv);
     using namespace lightning;
-
-    rclcpp::init(argc, argv);
 
     LocSystem::Options opt;
     LocSystem loc(opt);

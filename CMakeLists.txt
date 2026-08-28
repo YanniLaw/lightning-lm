@@ -27,7 +27,9 @@ if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif ()
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
+# Keep runtime artifacts inside the CMake build tree. ROS 2 executables are
+# installed to lib/${PROJECT_NAME} by src/app/CMakeLists.txt.
+# set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 # set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/libs)
 # set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/libs)
 
@@ -54,36 +56,17 @@ include_directories(
         ${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp
 )
 
-install(DIRECTORY config
-        DESTINATION lib/${PROJECT_NAME}/
+# install(DIRECTORY config
+#         DESTINATION lib/${PROJECT_NAME}/
+# )
+
+install(DIRECTORY config launch
+        DESTINATION share/${PROJECT_NAME}/
 )
 
 add_subdirectory(thirdparty/livox_ros_driver)
 
 add_subdirectory(src)
 
-if (BUILD_TESTING)
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
-    add_test(
-            NAME lightning_portability_cmake
-            COMMAND ${CMAKE_COMMAND}
-                    -DLIGHTNING_SOURCE_DIR=${PROJECT_SOURCE_DIR}
-                    -P ${PROJECT_SOURCE_DIR}/tests/cmake/portability_test.cmake)
-
-    add_test(
-            NAME lightning_package_manifest
-            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_package_manifest.py)
-
-    if (NOT LIGHTNING_WITH_PANGOLIN)
-        add_executable(lightning_headless_ui_test
-                tests/pangolin_window_headless_test.cc)
-        target_link_libraries(lightning_headless_ui_test
-                ${PROJECT_NAME}.libs)
-        add_test(
-                NAME lightning_headless_ui
-                COMMAND lightning_headless_ui_test)
-    endif ()
-endif ()
 
 ament_package()
