@@ -59,7 +59,7 @@ class SlamSystem {
 
     /// 对外部交互接口
     /// 开始建图，输入地图名称
-    void StartSLAM(std::string map_name);
+    void StartSLAM(/*std::string map_name*/);
 
     /// 保存地图，默认保存至./data/地图名/ 下方
     void SaveMap(const std::string& path = "");

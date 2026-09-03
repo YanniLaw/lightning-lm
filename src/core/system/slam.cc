@@ -129,9 +129,10 @@ SlamSystem::~SlamSystem() {
     }
 }
 
-void SlamSystem::StartSLAM(std::string map_name) {
-    map_name_ = map_name;
+void SlamSystem::StartSLAM(/*std::string map_name*/) {
+    // map_name_ = map_name;
     running_ = true;
+    LOG(INFO) << "SLAM started.";
 }
 
 void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,

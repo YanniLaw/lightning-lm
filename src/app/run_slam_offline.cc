@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    slam.StartSLAM("new_map");
+    slam.StartSLAM();
 
     lightning::YAML_IO yaml(FLAGS_config);
     std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
                              })
         .Go();
 
-    slam.SaveMap("");
+    slam.SaveMap("new_map");
     Timer::PrintAll();
 
     LOG(INFO) << "done";
