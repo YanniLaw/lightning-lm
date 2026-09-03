@@ -21,6 +21,7 @@ namespace lightning {
 
 class LaserMapping;  //  lio 前端
 class LoopClosing;   // 回环检测
+class RosVisualization;
 
 namespace ui {
 class PangolinWindow;
@@ -45,6 +46,9 @@ class SlamSystem {
         bool with_loop_closing_ = true;     // 是否需要回环检测
         bool with_visualization_ = true;    // 是否需要可视化UI
         bool with_2dvisualization_ = true;  // 是否需要2D可视化UI
+        bool with_rviz_ = false;            // 是否发布ROS2 RViz可视化话题
+        double rviz_local_map_publish_hz_ = 2.0;  // 累积局部地图发布频率，<=0表示每帧发布
+        std::size_t rviz_local_map_max_scans_ = 200;  // 累积局部地图最多保留的扫描帧数
 
         bool step_on_kf_ = true;  // 是否在关键帧处暂停p
     };
@@ -89,6 +93,7 @@ class SlamSystem {
     std::shared_ptr<LoopClosing> lc_ = nullptr;         // 回环检测
     std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  // ui
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        // 栅格地图
+    std::shared_ptr<RosVisualization> ros_visualization_ = nullptr;
 
     Keyframe::Ptr cur_kf_ = nullptr;
 

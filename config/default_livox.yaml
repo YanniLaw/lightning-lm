@@ -53,6 +53,9 @@ g2p5:
   grid_map_resolution: 0.2 # 栅格地图分辨率
 
 system:
+  with_rviz: true # 是否发布的RViz可视化话题
+  rviz_local_map_publish_hz: 2.0 # RViz累积局部地图发布频率，<=0表示每帧发布
+  rviz_local_map_max_scans: 200 # RViz累积局部地图最多保留的扫描帧数
   with_loop_closing: true # 是否需要回环检测
   with_ui: true # 是否需要3D UI
   with_2dui: false # 是否需要2D UI

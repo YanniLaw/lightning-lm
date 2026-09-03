@@ -5,7 +5,10 @@ set -Eeuo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${repository_root}"
 
-build_jobs="${LIGHTNING_BUILD_JOBS:-2}"
+# This project has several very large Eigen/PCL translation units. Three
+# compiler processes improve build time on a 20-thread workstation while
+# keeping memory and interactive responsiveness within a safe margin.
+build_jobs="${LIGHTNING_BUILD_JOBS:-3}"
 if [[ ! "${build_jobs}" =~ ^[1-9][0-9]*$ ]]; then
     echo "LIGHTNING_BUILD_JOBS must be a positive integer, got: ${build_jobs}" >&2
     exit 2
@@ -56,6 +59,20 @@ done
 export CMAKE_BUILD_PARALLEL_LEVEL="${build_jobs}"
 export MAKEFLAGS="-j${build_jobs} -l${load_limit}"
 
+cmake_args=(
+    -DCMAKE_BUILD_TYPE=Release
+    -DBUILD_TESTING=OFF
+    -DLIGHTNING_WITH_PANGOLIN=ON
+)
+if command -v ccache >/dev/null 2>&1; then
+    # Reuse unchanged Eigen/PCL translation units on subsequent builds without
+    # increasing compiler concurrency or interactive resource usage.
+    cmake_args+=("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
+    echo "  compiler cache: ccache"
+else
+    echo "  compiler cache: unavailable"
+fi
+
 echo "Low-impact local build"
 echo "  compiler jobs: ${build_jobs}"
 echo "  make load limit: ${load_limit}"
@@ -71,6 +88,4 @@ exec nice -n 10 ionice -c 2 -n 7 \
         --parallel-workers 1 \
         --packages-select lightning \
         --cmake-args \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF \
-            -DLIGHTNING_WITH_PANGOLIN=ON
+            "${cmake_args[@]}"

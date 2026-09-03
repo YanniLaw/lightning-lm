@@ -166,6 +166,38 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
     imu_buffer_.emplace_back(imu);
 }
 
+void LaserMapping::NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double timestamp) {
+    if (!lio_data_callback_) {
+        return;
+    }
+
+    auto registered_cloud = std::make_shared<PointCloudType>();
+    registered_cloud->resize(cloud->size());
+    for (size_t index = 0; index < cloud->size(); ++index) {
+        PointType& registered_point = registered_cloud->points[index];
+        registered_point = cloud->points[index];
+        const Vec3d point_in_map =
+            pose.so3() * (offset_R_lidar_fixed_ * ToVec3d(cloud->points[index]) + offset_t_lidar_fixed_) + pose.translation();
+        registered_point.x = point_in_map.x();
+        registered_point.y = point_in_map.y();
+        registered_point.z = point_in_map.z();
+    }
+
+    auto ivox_map = std::make_shared<PointCloudType>();
+    const PointVector local_map_points = ivox_->GetAllPoints();
+    ivox_map->points.assign(local_map_points.begin(), local_map_points.end());
+    ivox_map->width = static_cast<uint32_t>(ivox_map->points.size());
+    ivox_map->height = 1;
+    ivox_map->is_dense = false;
+
+    LIOData data;
+    data.pose = pose;
+    data.timestamp = timestamp;
+    data.registered_cloud = std::move(registered_cloud);
+    data.ivox_map = std::move(ivox_map);
+    lio_data_callback_(data);
+}
+
 bool LaserMapping::Run() {
     if (!SyncPackages()) {
         LOG(WARNING) << "sync package failed";
@@ -207,6 +239,7 @@ bool LaserMapping::Run() {
                 ui_->UpdateNavState(kf_.GetX());
                 ui_->UpdateScan(scan_undistort_, kf_.GetX().GetPose());
             }
+            NotifyLIOData(scan_undistort_, kf_.GetX().GetPose(), kf_.GetX().timestamp_);
 
             return false;
         }
@@ -321,6 +354,7 @@ bool LaserMapping::Run() {
     if (ui_) {
         ui_->UpdateScan(scan_down_body_, state_point_.GetPose());
     }
+    NotifyLIOData(scan_down_body_, state_point_.GetPose(), state_point_.timestamp_);
 
     LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
               << state_point_.rot_.angleZ<double>() * 180 / M_PI << ", vel: " << state_point_.vel_.transpose()

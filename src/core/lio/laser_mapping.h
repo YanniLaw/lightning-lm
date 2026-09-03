@@ -3,6 +3,9 @@
 
 #include <pcl/filters/voxel_grid.h>
 #include <condition_variable>
+#include <functional>
+#include <utility>
+#include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <thread>
 
@@ -13,6 +16,7 @@
 #include "core/ivox3d/ivox3d.h"
 #include "core/lio/eskf.hpp"
 #include "core/lio/imu_processing.hpp"
+#include "core/lio/lio_data.h"
 #include "pointcloud_preprocess.h"
 
 #include "livox_ros_driver2/msg/custom_msg.hpp"
@@ -82,6 +86,8 @@ class LaserMapping {
     void SaveMap();
 
     void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
+    using LIODataCallback = std::function<void(const LIOData&)>;
+    void SetLIODataCallback(LIODataCallback callback) { lio_data_callback_ = std::move(callback); }
 
     /// 获取关键帧
     Keyframe::Ptr GetKeyframe() const { return last_kf_; }
@@ -134,6 +140,8 @@ class LaserMapping {
 
     void MapIncremental();
 
+    void NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double timestamp);
+
     bool LoadParamsFromYAML(const std::string &yaml);
 
     /// 创建关键帧
@@ -150,6 +158,7 @@ class LaserMapping {
     std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
     std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // point cloud preprocess
     std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // imu process
+    LIODataCallback lio_data_callback_;
 
     /// local map related
     double filter_size_map_min_ = 0;

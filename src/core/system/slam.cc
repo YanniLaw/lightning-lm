@@ -7,6 +7,7 @@
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
 #include "core/maps/tiled_map.h"
+#include "core/visualization/ros_visualization.h"
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
 
@@ -34,6 +35,13 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     options_.with_2dvisualization_ = yaml["system"]["with_2dui"].as<bool>();
     options_.with_gridmap_ = yaml["system"]["with_g2p5"].as<bool>();
     options_.step_on_kf_ = yaml["system"]["step_on_kf"].as<bool>();
+    options_.with_rviz_ = yaml["system"]["with_rviz"] ? yaml["system"]["with_rviz"].as<bool>() : false;
+    options_.rviz_local_map_publish_hz_ = yaml["system"]["rviz_local_map_publish_hz"]
+                                             ? yaml["system"]["rviz_local_map_publish_hz"].as<double>()
+                                             : 2.0;
+    options_.rviz_local_map_max_scans_ = yaml["system"]["rviz_local_map_max_scans"]
+                                             ? yaml["system"]["rviz_local_map_max_scans"].as<std::size_t>()
+                                             : 200;
 
     if (options_.with_loop_closing_) {
         LOG(INFO) << "slam with loop closing";
@@ -83,6 +91,16 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 
         /// subscribers
         node_ = std::make_shared<rclcpp::Node>("lightning_slam");
+        if (options_.with_rviz_) {
+            ros_visualization_ =
+                std::make_shared<RosVisualization>(node_, options_.rviz_local_map_publish_hz_,
+                                                   options_.rviz_local_map_max_scans_);
+            lio_->SetLIODataCallback([this](const LIOData& data) {
+                if (ros_visualization_) {
+                    ros_visualization_->PublishLIOData(data);
+                }
+            });
+        }
 
         imu_topic_ = yaml["common"]["imu_topic"].as<std::string>();
         cloud_topic_ = yaml["common"]["lidar_topic"].as<std::string>();

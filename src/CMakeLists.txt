@@ -15,6 +15,8 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/lio/pointcloud_preprocess.cc
         core/loop_closing/loop_closing.cc
 
+        core/visualization/ros_visualization.cc
+
         core/g2p5/g2p5_map.cc
         core/g2p5/g2p5.cc
         core/g2p5/g2p5_subgrid.cc
