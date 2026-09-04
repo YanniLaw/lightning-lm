@@ -71,7 +71,13 @@ bool SlamSystem::Init(const std::string& yaml_path) {
             lc_->SetLoopClosedCB([this]() { g2p5_->RedrawGlobalMap(); });
         }
 
-        if (options_.with_2dvisualization_) {
+        if (options_.with_rviz_) {
+            g2p5_->SetMapUpdateCallback([this](g2p5::G2P5MapPtr map) {
+                if (ros_visualization_) {
+                    ros_visualization_->PublishGridMap(map->ToROS());
+                }
+            });
+        } else if (options_.with_2dvisualization_) {
             g2p5_->SetMapUpdateCallback([this](g2p5::G2P5MapPtr map) {
                 cv::Mat image = map->ToCV();
                 cv::imshow("map", image);

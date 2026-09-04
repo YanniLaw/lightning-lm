@@ -17,9 +17,16 @@ RosVisualization::RosVisualization(const rclcpp::Node::SharedPtr& node, double l
     // Keep the latest map so RViz can receive it even when it starts after
     // the first map publication. Depth 1 avoids retaining multiple large maps.
     const rclcpp::QoS map_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+    grid_map_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>("/map", map_qos);
     ivox_map_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("/ivox_map", map_qos);
     local_map_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("/local_map", map_qos);
     tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node);
+}
+
+void RosVisualization::PublishGridMap(nav_msgs::msg::OccupancyGrid map) {
+    map.header.frame_id = "map";
+    map.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+    grid_map_pub_->publish(std::move(map));
 }
 
 void RosVisualization::PublishLIOData(const LIOData& data) {
