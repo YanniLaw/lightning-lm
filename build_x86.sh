@@ -8,19 +8,19 @@ cd "${repository_root}"
 # This project has several very large Eigen/PCL translation units. Three
 # compiler processes improve build time on a 20-thread workstation while
 # keeping memory and interactive responsiveness within a safe margin.
-build_jobs="${LIGHTNING_BUILD_JOBS:-3}"
+build_jobs="${LIGHTNING_BUILD_JOBS:-5}"
 if [[ ! "${build_jobs}" =~ ^[1-9][0-9]*$ ]]; then
     echo "LIGHTNING_BUILD_JOBS must be a positive integer, got: ${build_jobs}" >&2
     exit 2
 fi
 
-load_limit="${LIGHTNING_BUILD_LOAD_LIMIT:-$((build_jobs * 2))}"
+load_limit="${LIGHTNING_BUILD_LOAD_LIMIT:-$((build_jobs * 3))}"
 if [[ ! "${load_limit}" =~ ^[1-9][0-9]*$ ]]; then
     echo "LIGHTNING_BUILD_LOAD_LIMIT must be a positive integer, got: ${load_limit}" >&2
     exit 2
 fi
 
-minimum_free_disk_gb="${LIGHTNING_MIN_FREE_DISK_GB:-10}"
+minimum_free_disk_gb="${LIGHTNING_MIN_FREE_DISK_GB:-5}"
 if [[ ! "${minimum_free_disk_gb}" =~ ^[0-9]+$ ]]; then
     echo "LIGHTNING_MIN_FREE_DISK_GB must be a non-negative integer, got: ${minimum_free_disk_gb}" >&2
     exit 2

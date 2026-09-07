@@ -8,7 +8,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     config = LaunchConfiguration("config")
     default_config = PathJoinSubstitution(
-        [FindPackageShare("lightning"), "config", "default_livox.yaml"]
+        [FindPackageShare("lightning"), "config", "indoor_mid360s.yaml"]
     )
 
     return LaunchDescription(
