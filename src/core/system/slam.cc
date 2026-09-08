@@ -7,19 +7,21 @@
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
 #include "core/maps/tiled_map.h"
-#include "core/visualization/ros_visualization.h"
-#include "ui/pangolin_window.h"
-#include "wrapper/ros_utils.h"
 
 #include <yaml-cpp/yaml.h>
+#include <pcl/io/pcd_io.h>
 #include <filesystem>
+#include <fstream>
 #include <opencv2/opencv.hpp>
 
 namespace lightning {
 
 SlamSystem::SlamSystem(lightning::SlamSystem::Options options) : options_(options) {
-    /// handle ctrl-c
-    signal(SIGINT, lightning::debug::SigHandle);
+    sys::SensorDispatcher::Options dispatcher_options;
+    sensor_dispatcher_ = std::make_unique<sys::SensorDispatcher>(
+        dispatcher_options,
+        [this](const IMUPtr& imu) { ProcessIMUOnWorker(imu); },
+        [this](const TimedPointCloudData& cloud) { ProcessLidarOnWorker(cloud); });
 }
 
 bool SlamSystem::Init(const std::string& yaml_path) {
@@ -27,6 +29,9 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     if (!lio_->Init(yaml_path)) {
         LOG(ERROR) << "failed to init lio module";
         return false;
+    }
+    if (lio_data_callback_) {
+        lio_->SetLIODataCallback(lio_data_callback_);
     }
 
     auto yaml = YAML::LoadFile(yaml_path);
@@ -51,12 +56,11 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         lc_->Init(yaml_path);
     }
 
-    if (options_.with_visualization_) {
-        LOG(INFO) << "slam with 3D UI";
-        ui_ = std::make_shared<ui::PangolinWindow>();
-        ui_->Init();
-
-        lio_->SetUI(ui_);
+    if (nav_state_callback_) {
+        lio_->SetNavStateCallback(nav_state_callback_);
+    }
+    if (scan_callback_) {
+        lio_->SetScanCallback(scan_callback_);
     }
 
     if (options_.with_gridmap_) {
@@ -71,101 +75,25 @@ bool SlamSystem::Init(const std::string& yaml_path) {
             lc_->SetLoopClosedCB([this]() { g2p5_->RedrawGlobalMap(); });
         }
 
-        if (options_.with_rviz_) {
-            g2p5_->SetMapUpdateCallback([this](g2p5::G2P5MapPtr map) {
-                if (ros_visualization_) {
-                    ros_visualization_->PublishGridMap(map->ToROS());
-                }
-            });
-        } else if (options_.with_2dvisualization_) {
-            g2p5_->SetMapUpdateCallback([this](g2p5::G2P5MapPtr map) {
-                cv::Mat image = map->ToCV();
-                cv::imshow("map", image);
-
-                if (options_.step_on_kf_) {
-                    cv::waitKey(0);
-
-                } else {
-                    cv::waitKey(10);
-                }
-            });
-        }
-    }
-
-    if (options_.online_mode_) {
-        LOG(INFO) << "online mode, creating ros2 node ... ";
-
-        /// subscribers
-        node_ = std::make_shared<rclcpp::Node>("lightning_slam");
-        if (options_.with_rviz_) {
-            ros_visualization_ =
-                std::make_shared<RosVisualization>(node_, options_.rviz_local_map_publish_hz_,
-                                                   options_.rviz_local_map_max_scans_);
-            lio_->SetLIODataCallback([this](const LIOData& data) {
-                if (ros_visualization_) {
-                    ros_visualization_->PublishLIOData(data);
-                }
-            });
-        }
-
-        imu_topic_ = yaml["common"]["imu_topic"].as<std::string>();
-        cloud_topic_ = yaml["common"]["lidar_topic"].as<std::string>();
-        livox_topic_ = yaml["common"]["livox_lidar_topic"].as<std::string>();
-
-        rclcpp::QoS qos(10);
-        // qos.best_effort();
-
-        imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-            imu_topic_, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
-                IMUPtr imu = std::make_shared<IMU>();
-                imu->timestamp = ToSec(msg->header.stamp);
-                imu->linear_acceleration =
-                    Vec3d(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
-                imu->angular_velocity =
-                    Vec3d(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
-
-                ProcessIMU(imu);
-            });
-
-        cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-            cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-            });
-
-        livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-            livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
-                Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-            });
-
-        savemap_service_ = node_->create_service<SaveMapService>(
-            "lightning/save_map", [this](const SaveMapService::Request::SharedPtr& req,
-                                         SaveMapService::Response::SharedPtr res) { SaveMap(req, res); });
-
-        LOG(INFO) << "online slam node has been created.";
+        g2p5_->SetMapUpdateCallback([this](GridMapDataPtr map) {
+            if (grid_map_callback_) {
+                grid_map_callback_(std::move(map));
+            }
+        });
     }
 
     return true;
 }
 
-SlamSystem::~SlamSystem() {
-    if (ui_) {
-        ui_->Quit();
-    }
-}
+SlamSystem::~SlamSystem() { Stop(); }
 
 void SlamSystem::StartSLAM(/*std::string map_name*/) {
     // map_name_ = map_name;
     running_ = true;
+    if (options_.online_mode_ && sensor_dispatcher_) {
+        sensor_dispatcher_->Start();
+    }
     LOG(INFO) << "SLAM started.";
-}
-
-void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,
-                         SaveMapService::Response::SharedPtr response) {
-    map_name_ = request->map_id;
-    std::string save_path = "./data/" + map_name_ + "/";
-
-    SaveMap(save_path);
-    response->response = 0;
 }
 
 void SlamSystem::SaveMap(const std::string& path) {
@@ -199,17 +127,21 @@ void SlamSystem::SaveMap(const std::string& path) {
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
     if (options_.with_gridmap_) {
-        /// 存为ROS兼容的模式
-        auto map = g2p5_->GetNewestMap()->ToROS();
-        const int width = map.info.width;
-        const int height = map.info.height;
+        auto map = g2p5_->GetNewestMap();
+        if (!map) {
+            LOG(WARNING) << "no grid map is available";
+            return;
+        }
+        auto grid = map->ToGridData();
+        const int width = static_cast<int>(grid->width);
+        const int height = static_cast<int>(grid->height);
 
         cv::Mat nav_image(height, width, CV_8UC1);
         for (int y = 0; y < height; ++y) {
             const int rowStartIndex = y * width;
             for (int x = 0; x < width; ++x) {
                 const int index = rowStartIndex + x;
-                int8_t data = map.data[index];
+                int8_t data = grid->cells[index];
                 if (data == 0) {                                   // Free
                     nav_image.at<uchar>(height - 1 - y, x) = 255;  // White
                 } else if (data == 100) {                          // Occupied
@@ -234,10 +166,10 @@ void SlamSystem::SaveMap(const std::string& path) {
             emitter << YAML::BeginMap;
             emitter << YAML::Key << "image" << YAML::Value << "map.pgm";
             emitter << YAML::Key << "mode" << YAML::Value << "trinary";
-            emitter << YAML::Key << "width" << YAML::Value << map.info.width;
-            emitter << YAML::Key << "height" << YAML::Value << map.info.height;
-            emitter << YAML::Key << "resolution" << YAML::Value << float(0.05);
-            std::vector<double> orig{map.info.origin.position.x, map.info.origin.position.y, 0};
+            emitter << YAML::Key << "width" << YAML::Value << grid->width;
+            emitter << YAML::Key << "height" << YAML::Value << grid->height;
+            emitter << YAML::Key << "resolution" << YAML::Value << grid->resolution;
+            std::vector<double> orig{grid->origin.x(), grid->origin.y(), 0};
             emitter << YAML::Key << "origin" << YAML::Value << orig;
             emitter << YAML::Key << "negate" << YAML::Value << 0;
             emitter << YAML::Key << "occupied_thresh" << YAML::Value << 0.65;
@@ -257,79 +189,119 @@ void SlamSystem::SaveMap(const std::string& path) {
 }
 
 void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
-    if (running_ == false) {
+    if (!running_ || !lio_ || !imu) {
+        return;
+    }
+    if (!options_.online_mode_ || !sensor_dispatcher_) {
+        ProcessIMUOnWorker(imu);
+        return;
+    }
+
+    const InputResult result = sensor_dispatcher_->AddImu(imu);
+    if (result != InputResult::Accepted && result != InputResult::NotRunning) {
+        LOG(WARNING) << "reject IMU input: " << static_cast<int>(result);
+    }
+}
+
+bool SlamSystem::ProcessLidar(const TimedPointCloudData& cloud) {
+    if (!running_ || !lio_) {
+        return false;
+    }
+
+    if (!options_.online_mode_ || !sensor_dispatcher_) {
+        return ProcessLidarOnWorker(cloud);
+    }
+
+    auto scan = std::make_shared<TimedPointCloudData>(cloud);
+    const InputResult result = sensor_dispatcher_->AddPointCloud(std::move(scan));
+    if (result != InputResult::Accepted && result != InputResult::NotRunning) {
+        LOG(WARNING) << "reject lidar input: " << static_cast<int>(result);
+    }
+    return result == InputResult::Accepted;
+}
+
+void SlamSystem::ProcessIMUOnWorker(const IMUPtr& imu) {
+    if (!lio_ || !imu) {
         return;
     }
     lio_->ProcessIMU(imu);
+    if (lio_->HasPendingLidar()) {
+        RunPendingLidar();
+    }
 }
 
-void SlamSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud) {
-    if (running_ == false) {
-        return;
+bool SlamSystem::ProcessLidarOnWorker(const TimedPointCloudData& cloud) {
+    if (!lio_ || !lio_->ProcessPointCloud(cloud)) {
+        return false;
     }
+    return RunPendingLidar();
+}
 
-    lio_->ProcessPointCloud2(cloud);
-    lio_->Run();
+bool SlamSystem::RunPendingLidar() {
+    if (!lio_ || !lio_->Run()) {
+        return false;
+    }
 
     auto kf = lio_->GetKeyframe();
-    if (kf != cur_kf_) {
-        cur_kf_ = kf;
-    } else {
-        return;
+    if (kf == cur_kf_ || !kf) {
+        return true;
     }
+    cur_kf_ = kf;
 
-    if (cur_kf_ == nullptr) {
-        return;
-    }
-
-    if (options_.with_loop_closing_) {
+    if (options_.with_loop_closing_ && lc_) {
         lc_->AddKF(cur_kf_);
     }
 
-    if (options_.with_gridmap_) {
+    if (options_.with_gridmap_ && g2p5_) {
         g2p5_->PushKeyframe(cur_kf_);
     }
 
-    if (ui_) {
-        ui_->UpdateKF(cur_kf_);
+    if (keyframe_callback_) {
+        keyframe_callback_(cur_kf_);
+    }
+    return true;
+}
+
+void SlamSystem::SetLIODataCallback(std::function<void(const LIOData&)> callback) {
+    lio_data_callback_ = std::move(callback);
+    if (lio_) {
+        lio_->SetLIODataCallback(lio_data_callback_);
     }
 }
 
-void SlamSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud) {
-    if (running_ == false) {
-        return;
-    }
-
-    lio_->ProcessPointCloud2(cloud);
-    lio_->Run();
-
-    auto kf = lio_->GetKeyframe();
-    if (kf != cur_kf_) {
-        cur_kf_ = kf;
-    } else {
-        return;
-    }
-
-    if (cur_kf_ == nullptr) {
-        return;
-    }
-
-    if (options_.with_loop_closing_) {
-        lc_->AddKF(cur_kf_);
-    }
-
-    if (options_.with_gridmap_) {
-        g2p5_->PushKeyframe(cur_kf_);
-    }
-
-    if (ui_) {
-        ui_->UpdateKF(cur_kf_);
+void SlamSystem::SetNavStateCallback(std::function<void(const NavState&)> callback) {
+    nav_state_callback_ = std::move(callback);
+    if (lio_) {
+        lio_->SetNavStateCallback(nav_state_callback_);
     }
 }
 
-void SlamSystem::Spin() {
-    if (options_.online_mode_ && node_ != nullptr) {
-        spin(node_);
+void SlamSystem::SetScanCallback(std::function<void(const CloudPtr&, const SE3&)> callback) {
+    scan_callback_ = std::move(callback);
+    if (lio_) {
+        lio_->SetScanCallback(scan_callback_);
+    }
+}
+
+void SlamSystem::SetKeyframeCallback(std::function<void(const Keyframe::Ptr&)> callback) {
+    keyframe_callback_ = std::move(callback);
+}
+
+void SlamSystem::SetGridMapCallback(std::function<void(GridMapDataPtr)> callback) {
+    grid_map_callback_ = std::move(callback);
+}
+
+sys::SensorDispatcher::Stats SlamSystem::GetInputStats() const {
+    return sensor_dispatcher_ ? sensor_dispatcher_->GetStats() : sys::SensorDispatcher::Stats();
+}
+
+void SlamSystem::Stop() {
+    if (options_.online_mode_ && sensor_dispatcher_) {
+        sensor_dispatcher_->Stop(sys::SensorDispatcher::StopMode::kDrain);
+    }
+    running_ = false;
+    if (g2p5_) {
+        g2p5_->Quit();
     }
 }
 

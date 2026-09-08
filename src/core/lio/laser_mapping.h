@@ -5,8 +5,6 @@
 #include <condition_variable>
 #include <functional>
 #include <utility>
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <thread>
 
 #include "common/eigen_types.h"
@@ -19,13 +17,7 @@
 #include "core/lio/lio_data.h"
 #include "pointcloud_preprocess.h"
 
-#include "livox_ros_driver2/msg/custom_msg.hpp"
-
 namespace lightning {
-
-namespace ui {
-class PangolinWindow;
-}
 
 /**
  * laser mapping
@@ -71,29 +63,33 @@ class LaserMapping {
     bool Run();
 
     // callbacks of lidar and imu
-    /// 处理ROS2的点云
-    void ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
-
-    /// 处理livox的点云
-    void ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg);
+    /// Process a transport-independent scan.  ROS adapters should convert
+    /// messages before calling this method.
+    bool ProcessPointCloud(const TimedPointCloudData& scan);
 
     /// 如果已经做了预处理，也可以直接处理点云
-    void ProcessPointCloud2(CloudPtr cloud);
+    void ProcessPointCloud(CloudPtr cloud);
 
     void ProcessIMU(const lightning::IMUPtr &msg_in);
 
     /// 保存前端的地图
     void SaveMap();
 
-    void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
     using LIODataCallback = std::function<void(const LIOData&)>;
     void SetLIODataCallback(LIODataCallback callback) { lio_data_callback_ = std::move(callback); }
+    using NavStateCallback = std::function<void(const NavState&)>;
+    using ScanCallback = std::function<void(const CloudPtr&, const SE3&)>;
+    void SetNavStateCallback(NavStateCallback callback) { nav_state_callback_ = std::move(callback); }
+    void SetScanCallback(ScanCallback callback) { scan_callback_ = std::move(callback); }
 
     /// 获取关键帧
     Keyframe::Ptr GetKeyframe() const { return last_kf_; }
 
     /// 获取激光的状态
     NavState GetState() const { return state_point_; }
+
+    /// Whether a scan is buffered and may become processable after another IMU sample.
+    bool HasPendingLidar() const { return lidar_pushed_ || !lidar_buffer_.empty(); }
 
     /// 获取IMU状态
     NavState GetIMUState() const {
@@ -159,6 +155,8 @@ class LaserMapping {
     std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // point cloud preprocess
     std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // imu process
     LIODataCallback lio_data_callback_;
+    NavStateCallback nav_state_callback_;
+    ScanCallback scan_callback_;
 
     /// local map related
     double filter_size_map_min_ = 0;
@@ -233,7 +231,6 @@ class LaserMapping {
 
     std::list<Keyframe::Ptr> proj_kfs_;  // 投影到当前帧的关键帧
 
-    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;
 };
 
 }  // namespace lightning

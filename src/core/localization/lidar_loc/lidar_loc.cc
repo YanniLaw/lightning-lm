@@ -12,12 +12,9 @@
 
 #include "core/localization/lidar_loc/lidar_loc.h"
 
-#include <opencv2/highgui.hpp>
-
 #include "glog/logging.h"
 #include "io/file_io.h"
 #include "io/yaml_io.h"
-#include "ui/pangolin_window.h"
 #include "utils/timer.h"
 
 namespace lightning::loc {
@@ -416,9 +413,10 @@ void LidarLoc::UpdateMapThread() {
         if (map_->MapUpdated() || map_->DynamicMapUpdated()) {
             UpdateGlobalMap();
 
-            if (ui_) {
-                ui_->UpdatePointCloudGlobal(map_->GetStaticCloud());
-                ui_->UpdatePointCloudDynamic(map_->GetDynamicCloud());
+            if (map_update_callback_) {
+                const auto static_cloud = map_->GetStaticCloud();
+                const auto dynamic_cloud = map_->GetDynamicCloud();
+                map_update_callback_(static_cloud, dynamic_cloud);
             }
 
             map_->CleanMapUpdate();

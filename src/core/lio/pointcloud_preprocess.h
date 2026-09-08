@@ -1,18 +1,13 @@
 #ifndef FASTER_LIO_POINTCLOUD_PROCESSING_H
 #define FASTER_LIO_POINTCLOUD_PROCESSING_H
 
-#include <pcl_conversions/pcl_conversions.h>
-
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
-#include "common/measure_group.h"
 #include "common/point_def.h"
-#include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "common/sensor_data.h"
 
 namespace lightning {
-
-enum class LidarType { AVIA = 1, VELO32 = 2, OUST64 = 3, ROBOSENSE = 4 };
 
 /**
  * point cloud preprocess
@@ -28,10 +23,8 @@ class PointCloudPreprocess {
     PointCloudPreprocess() = default;
     ~PointCloudPreprocess() = default;
 
-    /// processors
-    void Process(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg, PointCloudType::Ptr &pcl_out);
-
-    void Process(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud, PointCloudType::Ptr &pcl_out);
+    /// Convert a transport-independent scan into the point representation used by LIO.
+    bool Process(const TimedPointCloudData& scan, PointCloudType::Ptr& pcl_out) const;
 
     void Set(LidarType lid_type, double bld, int pfilt_num);
 
@@ -39,7 +32,7 @@ class PointCloudPreprocess {
     double &Blind() { return blind_; }
     int &NumScans() { return num_scans_; }
     int &PointFilterNum() { return point_filter_num_; }
-    float &TimeScale() { return time_scale_; }
+    float& TimeScale() { return time_scale_; }
     LidarType GetLidarType() const { return lidar_type_; }
     void SetLidarType(LidarType lt) { lidar_type_ = lt; }
 
@@ -49,11 +42,10 @@ class PointCloudPreprocess {
     }
 
    private:
-    void Oust64Handler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
-    void RoboSenseHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
-    void VelodyneHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
-
-    PointCloudType cloud_full_, cloud_out_;
+    bool ProcessLivox(const TimedPointCloudData& scan, PointCloudType& pcl_out) const;
+    bool ProcessStandard(const TimedPointCloudData& scan, PointCloudType& pcl_out) const;
+    bool IsInHeightRoi(const RawLidarPoint& point) const;
+    static PointType ToPoint(const RawLidarPoint& point, double time_ms);
 
     LidarType lidar_type_ = LidarType::AVIA;
     int point_filter_num_ = 1;

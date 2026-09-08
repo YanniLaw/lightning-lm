@@ -6,9 +6,10 @@
 
 #include <glog/logging.h>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <mutex>
-#include <queue>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -92,6 +93,10 @@ AsyncMessageProcess<T>::AsyncMessageProcess(AsyncMessageProcess::ProcFunc proc_f
 
 template <typename T>
 void AsyncMessageProcess<T>::Start() {
+    UL lock(mutex_);
+    if (proc_.joinable()) {
+        return;
+    }
     exit_flag_ = false;
     update_flag_ = false;
     proc_ = std::thread([this]() { ProcLoop(); });
@@ -99,19 +104,23 @@ void AsyncMessageProcess<T>::Start() {
 
 template <typename T>
 void AsyncMessageProcess<T>::ProcLoop() {
-    while (!exit_flag_) {
-        UL lock(mutex_);
-        cv_msg_.wait(lock, [this]() { return update_flag_; });
+    while (true) {
+        std::deque<T> buffer;
+        {
+            UL lock(mutex_);
+            cv_msg_.wait(lock, [this]() { return update_flag_ || exit_flag_; });
+            if (msg_buffer_.empty() && exit_flag_) {
+                break;
+            }
 
-        // take the message and process it
-        auto buffer = msg_buffer_;
-        msg_buffer_.clear();
-        update_flag_ = false;
-        lock.unlock();
+            buffer.swap(msg_buffer_);
+            update_flag_ = false;
+        }
 
-        // 处理之
         for (const auto& msg : buffer) {
-            custom_func_(msg);
+            if (custom_func_) {
+                custom_func_(msg);
+            }
         }
     }
 }
@@ -119,6 +128,10 @@ void AsyncMessageProcess<T>::ProcLoop() {
 template <typename T>
 void AsyncMessageProcess<T>::AddMessage(const T& msg) {
     UL lock(mutex_);
+    if (exit_flag_) {
+        return;
+    }
+
     if (enable_skip_) {
         if (skip_cnt_ != 0) {
             skip_cnt_++;
@@ -142,8 +155,17 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
 
 template <typename T>
 void AsyncMessageProcess<T>::Quit() {
-    update_flag_ = true;
-    exit_flag_ = true;
+    {
+        UL lock(mutex_);
+        if (!proc_.joinable()) {
+            msg_buffer_.clear();
+            update_flag_ = false;
+            exit_flag_ = true;
+            return;
+        }
+        update_flag_ = true;
+        exit_flag_ = true;
+    }
     cv_msg_.notify_one();
 
     if (proc_.joinable()) {

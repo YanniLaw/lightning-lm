@@ -1,14 +1,11 @@
 #include <pcl/common/transforms.h>
-#include <pcl_conversions/pcl_conversions.h>
+#include <utility>
 
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/localization.h"
 
-#include <opencv2/highgui.hpp>
-
 #include "core/localization/pose_graph/pgo.h"
 #include "io/yaml_io.h"
-#include "ui/pangolin_window.h"
 
 namespace lightning::loc {
 
@@ -44,14 +41,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lidar_loc_options.map_option_.map_path_ = global_map_path;
     lidar_loc_ = std::make_shared<LidarLoc>(lidar_loc_options);
 
-    if (options_.with_ui_) {
-        ui_ = std::make_shared<ui::PangolinWindow>();
-        ui_->SetCurrentScanSize(1);
-        ui_->Init();
-
-        lidar_loc_->SetUI(ui_);
-
-        // lio_->SetUI(ui_);
+    if (map_update_callback_) {
+        lidar_loc_->SetMapUpdateCallback(map_update_callback_);
     }
 
     lidar_loc_->Init(yaml_path);
@@ -95,13 +86,15 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
 
         loc_result_ = res;
 
-        if (tf_callback_ && loc_result_.valid_) {
-            tf_callback_(loc_result_.ToGeoMsg());
+        if (result_callback_) {
+            result_callback_(loc_result_);
         }
 
-        if (ui_) {
-            ui_->UpdateNavState(loc_result_.ToNavState());
-            ui_->UpdateRecentPose(loc_result_.pose_);
+        if (nav_state_callback_) {
+            nav_state_callback_(loc_result_.ToNavState());
+        }
+        if (recent_pose_callback_) {
+            recent_pose_callback_(loc_result_.pose_);
         }
     });
 
@@ -137,40 +130,31 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     return true;
 }
 
-void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-    UL lock(global_mutex_);
-    if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
-        return;
-    }
-
-    // 串行模式
+bool Localization::ProcessLidar(const TimedPointCloudData& scan) {
     CloudPtr laser_cloud(new PointCloudType);
-    preprocess_->Process(cloud, laser_cloud);
-    laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
-
-    if (options_.online_mode_) {
-        lidar_odom_proc_cloud_.AddMessage(laser_cloud);
-    } else {
-        LidarOdomProcCloud(laser_cloud);
+    if (!preprocess_->Process(scan, laser_cloud) || laser_cloud->empty()) {
+        return false;
     }
+    laser_cloud->header.stamp = static_cast<std::uint64_t>(scan.timestamp_ns);
+    return ProcessLidar(std::move(laser_cloud));
 }
 
-void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-    UL lock(global_mutex_);
-    if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
-        return;
+bool Localization::ProcessLidar(CloudPtr laser_cloud) {
+    if (!laser_cloud || laser_cloud->empty()) {
+        return false;
     }
 
-    // 串行模式
-    CloudPtr laser_cloud(new PointCloudType);
-    preprocess_->Process(cloud, laser_cloud);
-    laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
+    UL lock(global_mutex_);
+    if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
+        return false;
+    }
 
     if (options_.online_mode_) {
         lidar_odom_proc_cloud_.AddMessage(laser_cloud);
     } else {
         LidarOdomProcCloud(laser_cloud);
     }
+    return true;
 }
 
 void Localization::LidarOdomProcCloud(CloudPtr cloud) {
@@ -179,7 +163,7 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud) {
     }
 
     /// NOTE: 在NCLT这种数据集中，lio内部是有缓存的，它拿到的点云不一定是最新时刻的点云
-    lio_->ProcessPointCloud2(cloud);
+    lio_->ProcessPointCloud(std::move(cloud));
     if (!lio_->Run()) {
         return;
     }
@@ -237,16 +221,14 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     auto res = lidar_loc_->GetLocalizationResult();
     pgo_->ProcessLidarLoc(res);
 
-    if (ui_) {
-        // Twi with Til, here pose means Twl, thus Til=I
-        ui_->UpdateScan(scan_undist, res.pose_);
+    if (scan_callback_) {
+        // Twi with Til, here pose means Twl, thus Til=I.
+        scan_callback_(scan_undist, res.pose_);
     }
 
     if (loc_state_callback_) {
-        auto loc_state = std::make_shared<std_msgs::msg::Int32>();
-        loc_state->data = static_cast<int>(res.status_);
-        LOG(INFO) << "loc_state: " << loc_state->data;
-        loc_state_callback_(*loc_state);
+        LOG(INFO) << "loc_state: " << static_cast<int>(res.status_);
+        loc_state_callback_(res.status_);
     }
 
     // cv::Mat img(100, 100, CV_8UC3, cv::Scalar(255, 255, 255));
@@ -254,7 +236,7 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     // cv::waitKey(0);
 }
 
-void Localization::ProcessIMUMsg(IMUPtr imu) {
+void Localization::ProcessIMU(const IMUPtr& imu) {
     UL lock(global_mutex_);
 
     if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
@@ -329,13 +311,13 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
 // }
 
 void Localization::Finish() {
-    lidar_loc_->Finish();
-    if (ui_) {
-        ui_->Quit();
-    }
-
-    lidar_loc_proc_cloud_.Quit();
+    // Stop producers before releasing the map they access.  This keeps the
+    // localization worker threads from racing with map teardown.
     lidar_odom_proc_cloud_.Quit();
+    lidar_loc_proc_cloud_.Quit();
+    if (lidar_loc_) {
+        lidar_loc_->Finish();
+    }
 }
 
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {
@@ -345,7 +327,5 @@ void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vec
         lidar_loc_->SetInitialPose(SE3(q, t));
     }
 }
-
-void Localization::SetTFCallback(Localization::TFCallback&& callback) { tf_callback_ = callback; }
 
 }  // namespace lightning::loc

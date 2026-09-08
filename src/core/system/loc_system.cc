@@ -3,104 +3,169 @@
 //
 
 #include "core/system/loc_system.h"
+
 #include "core/localization/localization.h"
 #include "io/yaml_io.h"
-#include "wrapper/ros_utils.h"
 
 namespace lightning {
 
 LocSystem::LocSystem(LocSystem::Options options) : options_(options) {
-    /// handle ctrl-c
-    signal(SIGINT, lightning::debug::SigHandle);
+    sys::SensorDispatcher::Options dispatcher_options;
+    sensor_dispatcher_ = std::make_unique<sys::SensorDispatcher>(
+        dispatcher_options,
+        [this](const IMUPtr& imu) { ProcessIMUOnWorker(imu); },
+        [this](const TimedPointCloudData& cloud) { ProcessLidarOnWorker(cloud); });
 }
 
-LocSystem::~LocSystem() { loc_->Finish(); }
+LocSystem::~LocSystem() { Stop(); }
 
-bool LocSystem::Init(const std::string &yaml_path) {
-    loc::Localization::Options opt;
-    opt.online_mode_ = true;
-    loc_ = std::make_shared<loc::Localization>(opt);
+bool LocSystem::Init(const std::string& yaml_path) {
+    loc::Localization::Options options;
+    options.online_mode_ = true;
+    loc_ = std::make_shared<loc::Localization>(options);
 
     YAML_IO yaml(yaml_path);
+    const std::string map_path = yaml.GetValue<std::string>("system", "map_path");
 
-    std::string map_path = yaml.GetValue<std::string>("system", "map_path");
-
-    LOG(INFO) << "online mode, creating ros2 node ... ";
-
-    /// subscribers
-    node_ = std::make_shared<rclcpp::Node>("lightning_slam");
-
-    imu_topic_ = yaml.GetValue<std::string>("common", "imu_topic");
-    cloud_topic_ = yaml.GetValue<std::string>("common", "lidar_topic");
-    livox_topic_ = yaml.GetValue<std::string>("common", "livox_lidar_topic");
-
-    rclcpp::QoS qos(10);
-
-    imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-        imu_topic_, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
-            IMUPtr imu = std::make_shared<IMU>();
-            imu->timestamp = ToSec(msg->header.stamp);
-            imu->linear_acceleration =
-                Vec3d(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
-            imu->angular_velocity = Vec3d(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
-
-            ProcessIMU(imu);
-        });
-
-    cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-        cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-            Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-        });
-
-    livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-        livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
-            Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-        });
-
-    if (options_.pub_tf_) {
-        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
-        loc_->SetTFCallback(
-            [this](const geometry_msgs::msg::TransformStamped &pose) { tf_broadcaster_->sendTransform(pose); });
+    if (result_callback_) {
+        loc_->SetResultCallback(result_callback_);
+    }
+    if (nav_state_callback_) {
+        loc_->SetNavStateCallback(nav_state_callback_);
+    }
+    if (recent_pose_callback_) {
+        loc_->SetRecentPoseCallback(recent_pose_callback_);
+    }
+    if (scan_callback_) {
+        loc_->SetScanCallback(scan_callback_);
+    }
+    if (map_update_callback_) {
+        loc_->SetMapUpdateCallback(map_update_callback_);
     }
 
-    bool ret = loc_->Init(yaml_path, map_path);
-    if (ret) {
-        LOG(INFO) << "online loc node has been created.";
+    if (!loc_->Init(yaml_path, map_path)) {
+        LOG(ERROR) << "failed to initialize localization core";
+        loc_.reset();
+        return false;
     }
 
-    return ret;
+    map_loaded_ = true;
+    LOG(INFO) << "localization core has been created.";
+    return true;
 }
 
-void LocSystem::SetInitPose(const SE3 &pose) {
+void LocSystem::SetInitPose(const SE3& pose) {
+    if (!loc_ || !map_loaded_) {
+        return;
+    }
+
     LOG(INFO) << "set init pose: " << pose.translation().transpose() << ", "
               << pose.unit_quaternion().coeffs().transpose();
-
     loc_->SetExternalPose(pose.unit_quaternion(), pose.translation());
     loc_started_ = true;
-}
-
-void LocSystem::ProcessIMU(const IMUPtr &imu) {
-    if (loc_started_) {
-        loc_->ProcessIMUMsg(imu);
+    if (sensor_dispatcher_) {
+        sensor_dispatcher_->Start();
     }
 }
 
-void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr &cloud) {
-    if (loc_started_) {
-        loc_->ProcessLidarMsg(cloud);
+void LocSystem::ProcessIMU(const IMUPtr& imu) {
+    if (!loc_started_ || !loc_ || !imu) {
+        return;
+    }
+    if (sensor_dispatcher_) {
+        const InputResult result = sensor_dispatcher_->AddImu(imu);
+        if (result != InputResult::Accepted && result != InputResult::NotRunning) {
+            LOG(WARNING) << "reject IMU input: " << static_cast<int>(result);
+        }
+        return;
+    }
+    ProcessIMUOnWorker(imu);
+}
+
+bool LocSystem::ProcessLidar(const TimedPointCloudData& cloud) {
+    if (!loc_started_ || !loc_ || cloud.points.empty()) {
+        return false;
+    }
+    if (sensor_dispatcher_) {
+        auto scan = std::make_shared<TimedPointCloudData>(cloud);
+        const InputResult result = sensor_dispatcher_->AddPointCloud(std::move(scan));
+        if (result != InputResult::Accepted && result != InputResult::NotRunning) {
+            LOG(WARNING) << "reject lidar input: " << static_cast<int>(result);
+        }
+        return result == InputResult::Accepted;
+    }
+    return ProcessLidarOnWorker(cloud);
+}
+
+bool LocSystem::ProcessLidar(CloudPtr cloud) {
+    if (!loc_started_ || !loc_) {
+        return false;
+    }
+    return loc_->ProcessLidar(std::move(cloud));
+}
+
+void LocSystem::ProcessIMUOnWorker(const IMUPtr& imu) {
+    if (loc_ && loc_started_ && imu) {
+        loc_->ProcessIMU(imu);
     }
 }
 
-void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud) {
-    if (loc_started_) {
-        loc_->ProcessLivoxLidarMsg(cloud);
+bool LocSystem::ProcessLidarOnWorker(const TimedPointCloudData& cloud) {
+    return loc_ && loc_started_ && loc_->ProcessLidar(cloud);
+}
+
+void LocSystem::SetResultCallback(ResultCallback callback) {
+    result_callback_ = std::move(callback);
+    if (loc_) {
+        loc_->SetResultCallback(result_callback_);
     }
 }
 
-void LocSystem::Spin() {
-    if (node_ != nullptr) {
-        spin(node_);
+void LocSystem::SetNavStateCallback(NavStateCallback callback) {
+    nav_state_callback_ = std::move(callback);
+    if (loc_) {
+        loc_->SetNavStateCallback(nav_state_callback_);
     }
+}
+
+void LocSystem::SetRecentPoseCallback(RecentPoseCallback callback) {
+    recent_pose_callback_ = std::move(callback);
+    if (loc_) {
+        loc_->SetRecentPoseCallback(recent_pose_callback_);
+    }
+}
+
+void LocSystem::SetScanCallback(ScanCallback callback) {
+    scan_callback_ = std::move(callback);
+    if (loc_) {
+        loc_->SetScanCallback(scan_callback_);
+    }
+}
+
+void LocSystem::SetMapUpdateCallback(MapUpdateCallback callback) {
+    map_update_callback_ = std::move(callback);
+    if (loc_) {
+        loc_->SetMapUpdateCallback(map_update_callback_);
+    }
+}
+
+sys::SensorDispatcher::Stats LocSystem::GetInputStats() const {
+    return sensor_dispatcher_ ? sensor_dispatcher_->GetStats() : sys::SensorDispatcher::Stats();
+}
+
+void LocSystem::Stop() {
+    if (sensor_dispatcher_) {
+        sensor_dispatcher_->Stop(sys::SensorDispatcher::StopMode::kDrain);
+    }
+
+    loc_started_ = false;
+    if (!loc_) {
+        return;
+    }
+
+    loc_->Finish();
+    loc_.reset();
+    map_loaded_ = false;
 }
 
 }  // namespace lightning

@@ -5,10 +5,8 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
-#include "core/system/loc_system.h"
-#include "ui/pangolin_window.h"
+#include "ros/localization_node.h"
 #include "wrapper/ros_gflags.h"
-#include "wrapper/ros_utils.h"
 
 DEFINE_string(config, "./config/default.yaml", "配置文件");
 
@@ -19,18 +17,14 @@ int main(int argc, char** argv) {
     FLAGS_stderrthreshold = google::INFO;
 
     lightning::InitROSAndParseGFlags(argc, argv);
-    using namespace lightning;
-
-    LocSystem::Options opt;
-    LocSystem loc(opt);
-
-    if (!loc.Init(FLAGS_config)) {
+    auto node = std::make_shared<lightning::ros::LocalizationNode>(FLAGS_config);
+    if (!node->Init()) {
         LOG(ERROR) << "failed to init loc";
+        return -1;
     }
 
-    /// 默认起点开始定位
-    loc.SetInitPose(SE3());
-    loc.Spin();
+    rclcpp::spin(node);
+    node->Stop();
 
     rclcpp::shutdown();
 

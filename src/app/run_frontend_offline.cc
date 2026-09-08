@@ -7,8 +7,11 @@
 
 #include "core/g2p5/g2p5.h"
 #include "core/lio/laser_mapping.h"
+#include "ros/sensor_bridge.h"
 #include "ui/pangolin_window.h"
 #include "wrapper/bag_io.h"
+
+#include "io/yaml_io.h"
 #include "wrapper/ros_utils.h"
 
 #include <opencv2/opencv.hpp>
@@ -47,7 +50,12 @@ int main(int argc, char** argv) {
 
     auto ui = std::make_shared<ui::PangolinWindow>();
     ui->Init();
-    lio.SetUI(ui);
+    lio.SetNavStateCallback([ui](const NavState& state) { ui->UpdateNavState(state); });
+    lio.SetScanCallback([ui](const CloudPtr& cloud, const SE3& pose) { ui->UpdateScan(cloud, pose); });
+
+    YAML_IO yaml(FLAGS_config);
+    const auto lidar_type = static_cast<LidarType>(yaml.GetValue<int>("fasterlio", "lidar_type"));
+    const double velodyne_time_scale = yaml.GetValue<double>("fasterlio", "time_scale");
 
     Keyframe::Ptr cur_kf = nullptr;
 
@@ -59,7 +67,11 @@ int main(int argc, char** argv) {
                       })
         .AddPointCloud2Handle("points_raw",
                               [&](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                                  lio.ProcessPointCloud2(cloud);
+                                  TimedPointCloudData scan;
+                                  if (!ros::ToTimedPointCloudData(*cloud, lidar_type, velodyne_time_scale, scan)) {
+                                      return true;
+                                  }
+                                  lio.ProcessPointCloud(scan);
                                   lio.Run();
 
                                   auto kf = lio.GetKeyframe();

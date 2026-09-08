@@ -242,21 +242,20 @@ void G2P5Map::ReleaseResources() {
     malloc_trim(0);
 }
 
-nav_msgs::msg::OccupancyGrid G2P5Map::ToROS() {
-    nav_msgs::msg::OccupancyGrid occu_map;
+GridMapDataPtr G2P5Map::ToGridData() const {
+    auto occu_map = std::make_shared<GridMapData>();
     int image_width = grid_size_x_ * sub_grid_width_;
     int image_height = grid_size_y_ * sub_grid_width_;
-    occu_map.info.resolution = static_cast<nav_msgs::msg::MapMetaData::_resolution_type>(options_.resolution_);
-    occu_map.info.width = static_cast<nav_msgs::msg::MapMetaData::_width_type>(image_width);
-    occu_map.info.height = static_cast<nav_msgs::msg::MapMetaData::_width_type>(image_height);
-    occu_map.info.origin.position.x = min_x_;
-    occu_map.info.origin.position.y = min_y_;
+    occu_map->resolution = options_.resolution_;
+    occu_map->width = static_cast<std::uint32_t>(image_width);
+    occu_map->height = static_cast<std::uint32_t>(image_height);
+    occu_map->origin = Vec2d(min_x_, min_y_);
 
-    int grid_map_size = occu_map.info.width * occu_map.info.height;
+    int grid_map_size = image_width * image_height;
     int grid_map_size_1 = grid_map_size - 1;
-    occu_map.data.resize(grid_map_size);
+    occu_map->cells.resize(grid_map_size);
 
-    std::fill(occu_map.data.begin(), occu_map.data.end(), -1);
+    std::fill(occu_map->cells.begin(), occu_map->cells.end(), -1);
     int tmp_area = 0;
     int index_min, index_max;
 
@@ -282,16 +281,16 @@ nav_msgs::msg::OccupancyGrid G2P5Map::ToROS() {
                             continue;
                         } else if (occ > options_.occupancy_ratio_) {
                             tmp_area++;
-                            occu_map.data[MapIdx(image_width, x, y)] = 100;
+                            occu_map->cells[MapIdx(image_width, x, y)] = 100;
                         } else {
                             int index = MapIdx(image_width, x, y);
                             index_min = std::max(0, index - 1);
                             index_max = std::min(grid_map_size_1, index + 1);
 
                             for (auto extend = index_min; extend <= index_max; extend++) {
-                                if (occu_map.data[extend] < 0) {  //-1
+                                if (occu_map->cells[extend] < 0) {  //-1
                                     tmp_area++;
-                                    occu_map.data[extend] = 0;
+                                    occu_map->cells[extend] = 0;
                                 }
                             }
                         }

@@ -6,6 +6,7 @@
 #define LIGHTNING_G2P5_H
 
 #include "common/eigen_types.h"
+#include "common/grid_map_data.h"
 #include "common/keyframe.h"
 #include "core/g2p5/g2p5_map.h"
 #include "core/system/async_message_process.h"
@@ -63,7 +64,7 @@ class G2P5 {
     explicit G2P5(Options options = Options()) : options_(options) {}
     ~G2P5();
 
-    using MapUpdateCallback = std::function<void(G2P5MapPtr map)>;
+    using MapUpdateCallback = std::function<void(GridMapDataPtr map)>;
 
     /// 从yaml中读取配置信息
     void Init(std::string yaml_path);

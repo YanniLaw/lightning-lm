@@ -1,17 +1,11 @@
 #include <pcl/common/transforms.h>
+#include <pcl/io/pcd_io.h>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 
 #include "common/options.h"
 #include "core/lightning_math.hpp"
 #include "laser_mapping.h"
-
-#include <opencv2/core/mat.hpp>
-#include <opencv2/highgui.hpp>
-#include <opencv2/imgproc.hpp>
-
-#include "ui/pangolin_window.h"
-#include "wrapper/ros_utils.h"
 
 namespace lightning {
 
@@ -139,31 +133,42 @@ LaserMapping::LaserMapping(Options options) : options_(options) {
 }
 
 void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
+    if (!imu) {
+        return;
+    }
+
     publish_count_++;
 
     double timestamp = imu->timestamp;
+    NavState nav_state;
+    bool should_notify = false;
 
-    UL lock(mtx_buffer_);
-    if (timestamp < last_timestamp_imu_) {
-        LOG(WARNING) << "imu loop back, clear buffer";
-        imu_buffer_.clear();
-    }
-
-    if (p_imu_->IsIMUInited()) {
-        /// 更新最新imu状态
-        kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity, imu->linear_acceleration);
-
-        // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
-
-        /// 更新ui
-        if (ui_) {
-            ui_->UpdateNavState(kf_imu_.GetX());
+    {
+        UL lock(mtx_buffer_);
+        if (timestamp < last_timestamp_imu_) {
+            LOG(WARNING) << "imu loop back, clear buffer";
+            imu_buffer_.clear();
         }
+
+        if (p_imu_->IsIMUInited()) {
+            /// 更新最新imu状态
+            kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity,
+                            imu->linear_acceleration);
+
+            // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
+
+            nav_state = kf_imu_.GetX();
+            should_notify = true;
+        }
+
+        last_timestamp_imu_ = timestamp;
+
+        imu_buffer_.emplace_back(imu);
     }
 
-    last_timestamp_imu_ = timestamp;
-
-    imu_buffer_.emplace_back(imu);
+    if (should_notify && nav_state_callback_) {
+        nav_state_callback_(nav_state);
+    }
 }
 
 void LaserMapping::NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double timestamp) {
@@ -207,7 +212,7 @@ bool LaserMapping::Run() {
     /// IMU process, kf prediction, undistortion
     p_imu_->Process(measures_, kf_, scan_undistort_);
 
-    if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
+    if (scan_undistort_ == nullptr || scan_undistort_->empty()) {
         LOG(WARNING) << "No point, skip this scan!";
         return false;
     }
@@ -234,10 +239,11 @@ bool LaserMapping::Run() {
         skip_lidar_cnt_ = skip_lidar_cnt_ % skip_lidar_num_;
 
         if (skip_lidar_cnt_ != 0) {
-            /// 更新UI中的内容
-            if (ui_) {
-                ui_->UpdateNavState(kf_.GetX());
-                ui_->UpdateScan(scan_undistort_, kf_.GetX().GetPose());
+            if (nav_state_callback_) {
+                nav_state_callback_(kf_.GetX());
+            }
+            if (scan_callback_) {
+                scan_callback_(scan_undistort_, kf_.GetX().GetPose());
             }
             NotifyLIOData(scan_undistort_, kf_.GetX().GetPose(), kf_.GetX().timestamp_);
 
@@ -351,8 +357,8 @@ bool LaserMapping::Run() {
         }
     }
 
-    if (ui_) {
-        ui_->UpdateScan(scan_down_body_, state_point_.GetPose());
+    if (scan_callback_) {
+        scan_callback_(scan_down_body_, state_point_.GetPose());
     }
     NotifyLIOData(scan_down_body_, state_point_.GetPose(), state_point_.timestamp_);
 
@@ -443,71 +449,51 @@ void LaserMapping::MakeKF() {
     // }
 }
 
-void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
+bool LaserMapping::ProcessPointCloud(const TimedPointCloudData& scan) {
+    if (scan.timestamp_ns <= 0) {
+        LOG(ERROR) << "invalid lidar timestamp: " << scan.timestamp_ns;
+        return false;
+    }
+
+    CloudPtr cloud(new PointCloudType());
+    if (!preprocess_->Process(scan, cloud) || cloud->empty()) {
+        LOG(WARNING) << "lidar preprocessing failed";
+        return false;
+    }
+    cloud->header.stamp = static_cast<std::uint64_t>(scan.timestamp_ns);
+
     UL lock(mtx_buffer_);
-    Timer::Evaluate(
-        [&, this]() {
-            scan_count_++;
-            double timestamp = ToSec(msg->header.stamp);
-            if (timestamp < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, dt: " << timestamp - last_timestamp_lidar_;
-                return;
-            }
+    scan_count_++;
+    const double timestamp = static_cast<double>(scan.timestamp_ns) * 1e-9;
+    if (timestamp < last_timestamp_lidar_) {
+        LOG(ERROR) << "lidar loop back, dt: " << timestamp - last_timestamp_lidar_;
+        return false;
+    }
 
-            LOG(INFO) << "get cloud at " << std::setprecision(14) << timestamp
-                      << ", latest imu: " << last_timestamp_imu_;
-
-            CloudPtr cloud(new PointCloudType());
-            preprocess_->Process(msg, cloud);
-
-            lidar_buffer_.push_back(cloud);
-            time_buffer_.push_back(timestamp);
-            last_timestamp_lidar_ = timestamp;
-        },
-        "Preprocess (Standard)");
+    lidar_buffer_.push_back(cloud);
+    time_buffer_.push_back(timestamp);
+    last_timestamp_lidar_ = timestamp;
+    return true;
 }
 
-void LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg) {
+void LaserMapping::ProcessPointCloud(CloudPtr cloud) {
+    if (!cloud || cloud->empty()) {
+        return;
+    }
+
     UL lock(mtx_buffer_);
-    Timer::Evaluate(
-        [&, this]() {
-            scan_count_++;
-            double timestamp = ToSec(msg->header.stamp);
-            if (timestamp < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, clear buffer";
-                lidar_buffer_.clear();
-            }
+    scan_count_++;
 
-            // LOG(INFO) << "get cloud at " << std::setprecision(14) << timestamp
-            //           << ", latest imu: " << last_timestamp_imu_;
+    const double timestamp = math::ToSec(cloud->header.stamp);
+    if (timestamp < last_timestamp_lidar_) {
+        LOG(ERROR) << "lidar loop back, clear buffer";
+        lidar_buffer_.clear();
+        time_buffer_.clear();
+    }
 
-            CloudPtr cloud(new PointCloudType());
-            preprocess_->Process(msg, cloud);
-
-            lidar_buffer_.push_back(cloud);
-            time_buffer_.push_back(timestamp);
-            last_timestamp_lidar_ = timestamp;
-        },
-        "Preprocess (Standard)");
-}
-
-void LaserMapping::ProcessPointCloud2(CloudPtr cloud) {
-    UL lock(mtx_buffer_);
-    Timer::Evaluate(
-        [&, this]() {
-            scan_count_++;
-
-            double timestamp = math::ToSec(cloud->header.stamp);
-            if (timestamp < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, clear buffer";
-                lidar_buffer_.clear();
-            }
-
-            lidar_buffer_.push_back(cloud);
-            time_buffer_.push_back(timestamp);
-            last_timestamp_lidar_ = timestamp;
-        },
-        "Preprocess (Standard)");
+    lidar_buffer_.push_back(std::move(cloud));
+    time_buffer_.push_back(timestamp);
+    last_timestamp_lidar_ = timestamp;
 }
 
 bool LaserMapping::SyncPackages() {

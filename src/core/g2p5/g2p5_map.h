@@ -6,11 +6,11 @@
 #define LIGHTNING_G2P5_MAP_H
 
 #include "common/eigen_types.h"
+#include "common/grid_map_data.h"
 #include "common/std_types.h"
 #include "core/g2p5/g2p5_subgrid.h"
 
 #include <bitset>
-#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <opencv2/core.hpp>
 
 namespace lightning::g2p5 {
@@ -21,7 +21,7 @@ namespace lightning::g2p5 {
  * 数据存储在grids_中，是一个二维数组，内部还有4层subgrids
  * x为行指针，y为列指针，y优先增长
  *
- * 可以通过ToCV 或者 ToROS 转换成OpenCV格式或者ROS格式进行显示和存储
+ * 可以通过ToCV 或者 ToGridData 转换成OpenCV格式或者内部格式的地图进行显示和存储
  */
 class G2P5Map {
    public:
@@ -43,8 +43,8 @@ class G2P5Map {
     /// 由自身内容创建一个深拷贝
     std::shared_ptr<G2P5Map> MakeDeepCopy();
 
-    /// 转换至ros occupancy grid
-    nav_msgs::msg::OccupancyGrid ToROS();
+    /// Convert to a transport-independent occupancy-grid snapshot.
+    GridMapDataPtr ToGridData() const;
 
     /// 转换至opencv::Mat
     cv::Mat ToCV();
@@ -97,7 +97,7 @@ class G2P5Map {
     float GetGridResolution() const { return options_.resolution_; }
 
    private:
-    inline int MapIdx(int sx, int x, int y) { return (sx) * (y) + (x); }
+    inline int MapIdx(int sx, int x, int y) const { return (sx) * (y) + (x); }
 
    private:
     float grid_reso_ = 0.0;  /// subgrid的栅格分辨率

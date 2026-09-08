@@ -57,7 +57,7 @@ void G2P5::RenderFront(Keyframe::Ptr kf) {
 
     /// 向外回调
     if (map_update_cb_) {
-        map_update_cb_(newest_map_);
+        map_update_cb_(newest_map_->ToGridData());
     }
 }
 
@@ -152,7 +152,7 @@ void G2P5::RenderBack() {
 
         /// 向外回调
         if (map_update_cb_) {
-            map_update_cb_(newest_map_);
+            map_update_cb_(newest_map_->ToGridData());
         }
 
         is_busy_ = false;

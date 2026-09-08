@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(lightning)
 
+option(LIGHTNING_WITH_ROS "Build ROS 2 transport and applications" ON)
 option(LIGHTNING_WITH_PANGOLIN "Build the Pangolin visualization UI" OFF)
 option(BUILD_WITH_MARCH_NATIVE "Optimize for the build machine CPU" OFF)
 
@@ -36,37 +37,41 @@ endif ()
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(cmake/packages.cmake)
 
-# msg 和 srv
-set(MY_SRV_FILES "")
-set(SRC_DIR ${PROJECT_SOURCE_DIR}/srv)
-file(GLOB_RECURSE SRC_FILES ${SRC_DIR}/*.srv)
-foreach (SRC_FILE ${SRC_FILES})
-    file(RELATIVE_PATH REL_PATH ${SRC_DIR} ${SRC_FILE})
-    list(APPEND MY_SRV_FILES ${PROJECT_SOURCE_DIR}:srv/${REL_PATH})
-endforeach ()
+if (LIGHTNING_WITH_ROS)
+    # msg 和 srv
+    set(MY_SRV_FILES "")
+    set(SRC_DIR ${PROJECT_SOURCE_DIR}/srv)
+    file(GLOB_RECURSE SRC_FILES ${SRC_DIR}/*.srv)
+    foreach (SRC_FILE ${SRC_FILES})
+        file(RELATIVE_PATH REL_PATH ${SRC_DIR} ${SRC_FILE})
+        list(APPEND MY_SRV_FILES ${PROJECT_SOURCE_DIR}:srv/${REL_PATH})
+    endforeach ()
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-        ${MY_SRV_FILES}
-        ${MY_MSG_FILES}
-        ${MY_ACTION_FILES}
-        DEPENDENCIES std_msgs geometry_msgs sensor_msgs nav_msgs
-)
+    rosidl_generate_interfaces(${PROJECT_NAME}
+            ${MY_SRV_FILES}
+            ${MY_MSG_FILES}
+            ${MY_ACTION_FILES}
+            DEPENDENCIES std_msgs geometry_msgs sensor_msgs nav_msgs
+    )
 
-include_directories(
-        ${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp
-)
+    include_directories(
+            ${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp
+    )
 
-# install(DIRECTORY config
-#         DESTINATION lib/${PROJECT_NAME}/
-# )
-
-install(DIRECTORY config launch
-        DESTINATION share/${PROJECT_NAME}/
-)
-
-add_subdirectory(thirdparty/livox_ros_driver)
+    # The Livox package only provides ROS message definitions for this project.
+    add_subdirectory(thirdparty/livox_ros_driver)
+endif ()
 
 add_subdirectory(src)
 
-
-ament_package()
+if (LIGHTNING_WITH_ROS)
+    install(DIRECTORY config launch
+            DESTINATION share/${PROJECT_NAME}/
+    )
+    ament_package()
+else ()
+    # Keep core-only installs independent from a ROS environment.
+    install(DIRECTORY config
+            DESTINATION share/${PROJECT_NAME}/
+    )
+endif ()

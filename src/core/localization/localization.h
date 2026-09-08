@@ -1,18 +1,16 @@
 #pragma once
 
-#include "geometry_msgs/msg/transform_stamped.hpp"
-#include "std_msgs/msg/int32.hpp"
+#include <map>
+#include <utility>
 
 #include "common/imu.h"
+#include "common/sensor_data.h"
 #include "core/lio/laser_mapping.h"
 #include "core/localization/localization_result.h"
 #include "core/system/async_message_process.h"
 
 /// 预声明
 namespace lightning {
-namespace ui {
-class PangolinWindow;
-}
 
 namespace loc {
 
@@ -28,7 +26,7 @@ class Localization {
         Options() {}
 
         bool online_mode_ = false;  // 在线模式还是离线模式
-        bool with_ui_ = false;      // 是否带ui
+        bool with_ui_ = false;      // 是否请求外层UI消费者
 
         /// 参数
         SE3 T_body_lidar_;
@@ -52,12 +50,12 @@ class Localization {
      */
     bool Init(const std::string& yaml_path, const std::string& global_map_path);
 
-    /// 处理lidar消息
-    void ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr laser_msg);
-    void ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr laser_msg);
+    /// Process a transport-independent lidar scan.
+    bool ProcessLidar(const TimedPointCloudData& scan);
+    bool ProcessLidar(CloudPtr scan);
 
-    /// 处理IMU消息
-    void ProcessIMUMsg(IMUPtr imu);
+    /// Process an internal IMU sample.
+    void ProcessIMU(const IMUPtr& imu);
 
     // void ProcessOdomMsg(const nav_msgs::msg::Odometry::SharedPtr odom_msg) override;
 
@@ -75,19 +73,28 @@ class Localization {
     void LidarOdomProcCloud(CloudPtr);
     void LidarLocProcCloud(CloudPtr);
 
-    using TFCallback = std::function<void(const geometry_msgs::msg::TransformStamped& odom)>;
-    using LocStateCallback = std::function<void(const std_msgs::msg::Int32& state)>;
-    using PointcloudBodyCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
-    using PointcloudWorldCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
+    using ResultCallback = std::function<void(const LocalizationResult& result)>;
+    using LocStateCallback = std::function<void(LocalizationStatus status)>;
+    using NavStateCallback = std::function<void(const NavState&)>;
+    using RecentPoseCallback = std::function<void(const SE3&)>;
+    using ScanCallback = std::function<void(const CloudPtr&, const SE3&)>;
+    using MapUpdateCallback =
+        std::function<void(const std::map<int, CloudPtr>&, const std::map<int, CloudPtr>&)>;
 
-    void SetTFCallback(TFCallback&& callback);
+    void SetResultCallback(ResultCallback callback) { result_callback_ = std::move(callback); }
+    void SetLocStateCallback(LocStateCallback callback) { loc_state_callback_ = std::move(callback); }
+    void SetNavStateCallback(NavStateCallback callback) {
+        nav_state_callback_ = std::move(callback);
+    }
+    void SetRecentPoseCallback(RecentPoseCallback callback) {
+        recent_pose_callback_ = std::move(callback);
+    }
+    void SetScanCallback(ScanCallback callback) { scan_callback_ = std::move(callback); }
+    void SetMapUpdateCallback(MapUpdateCallback callback) {
+        map_update_callback_ = std::move(callback);
+    }
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
-    // void SetPointcloudWorldCallback(std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>&& callback);
-    // void SetPointcloudBodyCallback(std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>&& callback);
-    // void SetLocStateCallback(std::function<void(const std_msgs::msg::Int32& state)>&& callback);
-    // void SetHealthDiagNormalCallback(interface::health_diag_normal_callback&& callback);
-
    private:
     /// 模块  ========================================================================================================
     std::mutex global_mutex_;  // 防止处理过程中被重复init
@@ -99,9 +106,6 @@ class Localization {
     /// 前端
     std::shared_ptr<LaserMapping> lio_ = nullptr;
     Keyframe::Ptr lio_kf_ = nullptr;
-
-    // ui
-    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;
 
     // pose graph
     std::shared_ptr<PGO> pgo_ = nullptr;
@@ -117,10 +121,12 @@ class Localization {
     LocalizationResult loc_result_;
 
     /// 框架相关
-    TFCallback tf_callback_;
+    ResultCallback result_callback_;
     LocStateCallback loc_state_callback_;
-    PointcloudBodyCallback pointcloud_body_callback_;
-    PointcloudWorldCallback pointcloud_world_callback_;
+    NavStateCallback nav_state_callback_;
+    RecentPoseCallback recent_pose_callback_;
+    ScanCallback scan_callback_;
+    MapUpdateCallback map_update_callback_;
 
     /// 输入检查
     double last_imu_time_ = 0;

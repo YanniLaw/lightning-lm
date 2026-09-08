@@ -11,8 +11,6 @@
 #include <common/constant.h>
 #include <common/eigen_types.h>
 
-#include <rclcpp/rclcpp.hpp>
-
 /// 配置参数
 namespace lightning {
 
@@ -25,8 +23,8 @@ extern bool flg_next;     // 暂停后，放行单个消息(单步调试)
 extern float play_speed;  // 播放速度
 
 inline void SigHandle(int sig) {
+    (void)sig;
     debug::flg_exit = true;
-    rclcpp::shutdown();
 }
 
 }  // namespace debug

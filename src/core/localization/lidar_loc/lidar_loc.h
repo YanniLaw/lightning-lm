@@ -3,9 +3,12 @@
 #include <pcl/registration/icp.h>
 #include <chrono>
 #include <deque>
+#include <fstream>
+#include <functional>
 #include <iostream>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <map>
 #include <thread>
+#include <utility>
 
 #include "common/nav_state.h"
 #include "common/timed_pose.h"
@@ -13,10 +16,6 @@
 #include "core/maps/tiled_map.h"
 
 #include "pclomp/ndt_omp_impl.hpp"
-
-namespace lightning::ui {
-class PangolinWindow;
-}
 
 namespace lightning::loc {
 
@@ -117,8 +116,9 @@ class LidarLoc {
      */
     bool Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr output, bool use_rough_res = false);
 
-    /// 设置UI
-    void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
+    using MapUpdateCallback =
+        std::function<void(const std::map<int, CloudPtr>&, const std::map<int, CloudPtr>&)>;
+    void SetMapUpdateCallback(MapUpdateCallback callback) { map_update_callback_ = std::move(callback); }
 
     /// 设置init pose
     void SetInitialPose(SE3 init_pose);
@@ -194,7 +194,7 @@ class LidarLoc {
     ICPType::Ptr pcl_icp_ = nullptr;
 
     CloudPtr current_scan_ = nullptr;                   // 当前扫描
-    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  // ui
+    MapUpdateCallback map_update_callback_;
     SE3 last_loc_pose_;
 
     std::mutex initial_pose_mutex_;  // 初始定位锁

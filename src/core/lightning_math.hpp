@@ -14,10 +14,6 @@
 #include <cmath>
 #include <numeric>
 
-#include <tf2/LinearMath/Matrix3x3.h>
-#include <tf2/LinearMath/Quaternion.h>
-#include <rclcpp/time.hpp>
-
 #include "common/eigen_types.h"
 #include "common/options.h"
 #include "common/point_def.h"
@@ -567,13 +563,6 @@ inline void KeepAngleIn2PI(double& angle) {
     }
 }
 
-inline builtin_interfaces::msg::Time FromSec(double t) {
-    builtin_interfaces::msg::Time ret;
-    ret.sec = int32_t(t);
-    ret.nanosec = int32_t((t - ret.sec) * 1e9);
-    return ret;
-}
-
 /// 从pose中取出yaw pitch roll
 /// 使用的顺序是：roll pitch yaw ，最左是roll
 /// 由于欧拉角的多解性，Eigen在分解时选择最小化第一个（也就是roll）。否则，如果选择最小化yaw，那么roll和pitch可能出现大范围旋转，不符合实际
@@ -582,14 +571,21 @@ inline builtin_interfaces::msg::Time FromSec(double t) {
 /// 2020.11 change back to tf to keep consist
 inline PoseRPYD SE3ToRollPitchYaw(const SE3& pose) {
     auto rot = pose.rotationMatrix();
-    tf2::Matrix3x3 temp_tf_matrix(rot(0, 0), rot(0, 1), rot(0, 2), rot(1, 0), rot(1, 1), rot(1, 2), rot(2, 0),
-                                  rot(2, 1), rot(2, 2));
     PoseRPYD output;
     output.x = pose.translation()[0];
     output.y = pose.translation()[1];
     output.z = pose.translation()[2];
 
-    temp_tf_matrix.getRPY(output.roll, output.pitch, output.yaw);
+    const double sy = std::sqrt(rot(0, 0) * rot(0, 0) + rot(1, 0) * rot(1, 0));
+    if (sy >= 1e-6) {
+        output.roll = std::atan2(rot(2, 1), rot(2, 2));
+        output.pitch = std::atan2(-rot(2, 0), sy);
+        output.yaw = std::atan2(rot(1, 0), rot(0, 0));
+    } else {
+        output.roll = std::atan2(-rot(1, 2), rot(1, 1));
+        output.pitch = std::atan2(-rot(2, 0), sy);
+        output.yaw = 0.0;
+    }
     return output;
 }
 

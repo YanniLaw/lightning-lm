@@ -8,19 +8,21 @@
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <deque>
-#include <utility>
+#include <memory>
 
+#include "common/grid_map_data.h"
 #include "core/lio/lio_data.h"
 
-namespace lightning {
+namespace lightning::ros {
 
+/// ROS-only visualization consumer for the core LIO output.
 class RosVisualization {
    public:
     explicit RosVisualization(const rclcpp::Node::SharedPtr& node, double local_map_publish_hz = 2.0,
                               std::size_t local_map_max_scans = 200);
 
     void PublishLIOData(const LIOData& data);
-    void PublishGridMap(nav_msgs::msg::OccupancyGrid map);
+    void PublishGridMap(GridMapDataPtr map);
 
    private:
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr lio_path_pub_;
@@ -36,4 +38,4 @@ class RosVisualization {
     std::deque<std::shared_ptr<const PointCloudType>> scan_history_;
 };
 
-}  // namespace lightning
+}  // namespace lightning::ros
