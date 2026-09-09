@@ -15,7 +15,7 @@ fasterlio:
   skip_lidar_num: 0 # 点云的跳帧情况
   # Mid-360 点云按时间/扫描顺序排列；每 4 点抽 1 点会在长走廊中形成
   # 空间采样退化，导致前进方向约束不足。每 2 点抽 1 点是稳定性和开销的折中。
-  point_filter_num: 4 # 点云采样参数
+  point_filter_num: 2 # 点云采样参数
   max_iteration: 4 # 最大迭代次数
   filter_size_scan: 0.2 # 对scan进行的降采样
   filter_size_map: 0.2
