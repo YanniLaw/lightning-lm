@@ -17,12 +17,12 @@
 #include "common/keyframe.h"
 #include "common/sensor_data.h"
 #include "core/lio/lio_data.h"
+#include "core/loop_closing/pose_graph.h"
 #include "core/system/sensor_dispatcher.h"
 
 namespace lightning {
 
 class LaserMapping;  //  lio 前端
-class LoopClosing;   // 回环检测
 
 namespace g2p5 {
 class G2P5;
@@ -92,7 +92,7 @@ class SlamSystem {
     std::string map_name_;  // 地图名
 
     std::shared_ptr<LaserMapping> lio_ = nullptr;       // lio 前端
-    std::shared_ptr<LoopClosing> lc_ = nullptr;         // 回环检测
+    std::shared_ptr<PoseGraph> pose_graph_ = nullptr;  // 后端关键帧、回环与图优化
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        // 栅格地图
 
     Keyframe::Ptr cur_kf_ = nullptr;

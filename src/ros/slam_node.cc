@@ -60,6 +60,7 @@ bool SlamNode::Init() {
 
     const bool with_ui = yaml["system"]["with_ui"] ? yaml["system"]["with_ui"].as<bool>() : false;
     if (with_ui) {
+        LOG(INFO) << "slam with 3D UI";
         ui_ = std::make_shared<ui::PangolinWindow>();
         if (!ui_->Init()) {
             RCLCPP_ERROR(get_logger(), "failed to initialize Pangolin UI");
@@ -124,6 +125,7 @@ bool SlamNode::Init() {
         [this](const srv::SaveMap::Request::SharedPtr request,
                srv::SaveMap::Response::SharedPtr response) {
             if (!system_) {
+                LOG(WARNING) << "SLAM system not exitst!";
                 response->response = -1;
                 return;
             }

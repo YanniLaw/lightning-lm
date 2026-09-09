@@ -5,7 +5,6 @@
 #include "core/system/slam.h"
 #include "core/g2p5/g2p5.h"
 #include "core/lio/laser_mapping.h"
-#include "core/loop_closing/loop_closing.h"
 #include "core/maps/tiled_map.h"
 
 #include <yaml-cpp/yaml.h>
@@ -50,10 +49,10 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 
     if (options_.with_loop_closing_) {
         LOG(INFO) << "slam with loop closing";
-        LoopClosing::Options options;
-        options.online_mode_ = options_.online_mode_;
-        lc_ = std::make_shared<LoopClosing>(options);
-        lc_->Init(yaml_path);
+        PoseGraph::Options pose_graph_options;
+        pose_graph_options.online_mode_ = options_.online_mode_;
+        pose_graph_ = std::make_shared<PoseGraph>(pose_graph_options);
+        pose_graph_->Init(yaml_path);
     }
 
     if (nav_state_callback_) {
@@ -70,9 +69,9 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         g2p5_ = std::make_shared<g2p5::G2P5>(opt);
         g2p5_->Init(yaml_path);
 
-        if (options_.with_loop_closing_) {
+        if (options_.with_loop_closing_ && pose_graph_) {
             /// 当发生回环时，触发一次重绘
-            lc_->SetLoopClosedCB([this]() { g2p5_->RedrawGlobalMap(); });
+            pose_graph_->SetOptimizedCallback([this]() { g2p5_->RedrawGlobalMap(); });
         }
 
         g2p5_->SetMapUpdateCallback([this](GridMapDataPtr map) {
@@ -248,8 +247,8 @@ bool SlamSystem::RunPendingLidar() {
     }
     cur_kf_ = kf;
 
-    if (options_.with_loop_closing_ && lc_) {
-        lc_->AddKF(cur_kf_);
+    if (options_.with_loop_closing_ && pose_graph_) {
+        pose_graph_->AddKeyframe(cur_kf_);
     }
 
     if (options_.with_gridmap_ && g2p5_) {
@@ -298,6 +297,9 @@ sys::SensorDispatcher::Stats SlamSystem::GetInputStats() const {
 void SlamSystem::Stop() {
     if (options_.online_mode_ && sensor_dispatcher_) {
         sensor_dispatcher_->Stop(sys::SensorDispatcher::StopMode::kDrain);
+    }
+    if (pose_graph_) {
+        pose_graph_->Stop();
     }
     running_ = false;
     if (g2p5_) {

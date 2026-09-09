@@ -32,7 +32,9 @@ add_library(core SHARED
         core/lio/eskf.cc
         core/lio/laser_mapping.cc
         core/lio/pointcloud_preprocess.cc
+        core/loop_closing/keyframe_collection.cc
         core/loop_closing/loop_closing.cc
+        core/loop_closing/pose_graph.cc
 
         core/g2p5/g2p5_map.cc
         core/g2p5/g2p5.cc

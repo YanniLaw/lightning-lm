@@ -6,7 +6,7 @@
 #include <glog/logging.h>
 
 #include "core/lio/laser_mapping.h"
-#include "core/loop_closing/loop_closing.h"
+#include "core/loop_closing/pose_graph.h"
 #include "ros/sensor_bridge.h"
 #include "ui/pangolin_window.h"
 #include "wrapper/bag_io.h"
@@ -48,8 +48,10 @@ int main(int argc, char** argv) {
     const auto lidar_type = static_cast<LidarType>(yaml.GetValue<int>("fasterlio", "lidar_type"));
     const double velodyne_time_scale = yaml.GetValue<double>("fasterlio", "time_scale");
 
-    auto loop = std::make_shared<LoopClosing>();
-    loop->Init(FLAGS_config);
+    PoseGraph::Options pose_graph_options;
+    pose_graph_options.online_mode_ = false;
+    auto pose_graph = std::make_shared<PoseGraph>(pose_graph_options);
+    pose_graph->Init(FLAGS_config);
 
     Keyframe::Ptr cur_kf = nullptr;
 
@@ -60,7 +62,7 @@ int main(int argc, char** argv) {
                           return true;
                       })
         .AddPointCloud2Handle("points_raw",
-                              [&lio, &cur_kf, &loop, lidar_type, velodyne_time_scale](
+                              [&lio, &cur_kf, &pose_graph, lidar_type, velodyne_time_scale](
                                   sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
                                   TimedPointCloudData scan;
                                   if (!ros::ToTimedPointCloudData(*cloud, lidar_type, velodyne_time_scale, scan)) {
@@ -72,13 +74,14 @@ int main(int argc, char** argv) {
                                   auto kf = lio.GetKeyframe();
                                   if (cur_kf != kf) {
                                       cur_kf = kf;
-                                      loop->AddKF(kf);
+                                      pose_graph->AddKeyframe(kf);
                                   }
 
                                   return true;
                               })
         .Go();
 
+    pose_graph->Stop();
     lio.SaveMap();
     Timer::PrintAll();
 
