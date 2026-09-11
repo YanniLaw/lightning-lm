@@ -4,30 +4,91 @@
 
 #include "core/g2p5/g2p5_map.h"
 
+#include <algorithm>
+#include <cmath>
 #include <malloc.h>
 #include <cstdlib>
 #include <execution>
+
+namespace {
+
+struct GridExtent {
+    float min_x = 0.0F;
+    float min_y = 0.0F;
+    float max_x = 0.0F;
+    float max_y = 0.0F;
+    int size_x = 0;
+    int size_y = 0;
+    bool valid = false;
+};
+
+GridExtent MakeAlignedExtent(float min_x, float min_y, float max_x, float max_y, float block_resolution) {
+    GridExtent extent;
+    if (!std::isfinite(min_x) || !std::isfinite(min_y) || !std::isfinite(max_x) || !std::isfinite(max_y) ||
+        !(max_x > min_x) || !(max_y > min_y) || !(block_resolution > 0.0F)) {
+        return extent;
+    }
+
+    const double block = static_cast<double>(block_resolution);
+    const double aligned_min_x = std::floor(static_cast<double>(min_x) / block) * block;
+    const double aligned_min_y = std::floor(static_cast<double>(min_y) / block) * block;
+    const double aligned_max_x = std::ceil(static_cast<double>(max_x) / block) * block;
+    const double aligned_max_y = std::ceil(static_cast<double>(max_y) / block) * block;
+
+    // Both bounds were aligned using the same block size, so the quotient is
+    // mathematically integral.  Round it instead of using ceil() to avoid an
+    // extra block caused by floating-point noise.
+    const auto size_x = static_cast<int>(std::llround((aligned_max_x - aligned_min_x) / block));
+    const auto size_y = static_cast<int>(std::llround((aligned_max_y - aligned_min_y) / block));
+    if (size_x <= 0 || size_y <= 0) {
+        return extent;
+    }
+
+    extent.min_x = static_cast<float>(aligned_min_x);
+    extent.min_y = static_cast<float>(aligned_min_y);
+    extent.max_x = static_cast<float>(aligned_min_x + size_x * block);
+    extent.max_y = static_cast<float>(aligned_min_y + size_y * block);
+    extent.size_x = size_x;
+    extent.size_y = size_y;
+    extent.valid = true;
+    return extent;
+}
+
+lightning::g2p5::SubGrid** AllocateGrid(int size_x, int size_y) {
+    auto** grids = new lightning::g2p5::SubGrid*[size_x];
+    int allocated_columns = 0;
+    try {
+        for (; allocated_columns < size_x; ++allocated_columns) {
+            grids[allocated_columns] = new lightning::g2p5::SubGrid[size_y];
+        }
+    } catch (...) {
+        for (int x = 0; x < allocated_columns; ++x) {
+            delete[] grids[x];
+        }
+        delete[] grids;
+        throw;
+    }
+    return grids;
+}
+
+}  // namespace
 
 namespace lightning::g2p5 {
 
 bool G2P5Map::Init(const float &temp_min_x, const float &temp_min_y, const float &temp_max_x, const float &temp_max_y) {
     ReleaseResources();
-    min_x_ = temp_min_x;
-    min_y_ = temp_min_y;
-    max_x_ = temp_max_x;
-    max_y_ = temp_max_y;
-
-    grid_size_x_ = ceil((max_x_ - min_x_) / grid_reso_);
-    grid_size_y_ = ceil((max_y_ - min_y_) / grid_reso_);
-
-    if (grid_size_x_ <= 0 || grid_size_y_ <= 0) {
+    const GridExtent extent = MakeAlignedExtent(temp_min_x, temp_min_y, temp_max_x, temp_max_y, grid_reso_);
+    if (!extent.valid) {
         return false;
     }
 
-    grids_ = new SubGrid *[grid_size_x_];
-    for (int xi = 0; xi < grid_size_x_; ++xi) {
-        grids_[xi] = new SubGrid[grid_size_y_];
-    }
+    min_x_ = extent.min_x;
+    min_y_ = extent.min_y;
+    max_x_ = extent.max_x;
+    max_y_ = extent.max_y;
+    grid_size_x_ = extent.size_x;
+    grid_size_y_ = extent.size_y;
+    grids_ = AllocateGrid(grid_size_x_, grid_size_y_);
     return true;
 }
 
@@ -53,45 +114,52 @@ std::shared_ptr<G2P5Map> G2P5Map::MakeDeepCopy() {
 
 bool G2P5Map::Resize(const float &temp_min_x, const float &temp_min_y, const float &temp_max_x,
                      const float &temp_max_y) {
-    int temp_grid_size_x = ceil((temp_max_x - temp_min_x) / grid_reso_) + 1;
-    int temp_grid_size_y = ceil((temp_max_y - temp_min_y) / grid_reso_) + 1;
+    float requested_min_x = temp_min_x;
+    float requested_min_y = temp_min_y;
+    float requested_max_x = temp_max_x;
+    float requested_max_y = temp_max_y;
 
-    auto **new_grids = new SubGrid *[temp_grid_size_x];
-    for (int xi = 0; xi < temp_grid_size_x; ++xi) {
-        new_grids[xi] = new SubGrid[temp_grid_size_y];
+    // A resize must never discard the current map.  The old bounds are
+    // already aligned to complete SubGrid blocks, so including them here also
+    // makes repeated expansions stable.
+    if (grids_ != nullptr) {
+        requested_min_x = std::min(requested_min_x, min_x_);
+        requested_min_y = std::min(requested_min_y, min_y_);
+        requested_max_x = std::max(requested_max_x, max_x_);
+        requested_max_y = std::max(requested_max_y, max_y_);
     }
 
-    int min_grid_x = (int)round((temp_min_x - min_x_) / grid_reso_);
-    int min_grid_y = (int)round((temp_min_y - min_y_) / grid_reso_);
-    int max_grid_x = (int)ceil((temp_max_x - min_x_) / grid_reso_);
-    int max_grid_y = (int)ceil((temp_max_y - min_y_) / grid_reso_);
+    const GridExtent extent =
+        MakeAlignedExtent(requested_min_x, requested_min_y, requested_max_x, requested_max_y, grid_reso_);
+    if (!extent.valid) {
+        return false;
+    }
 
-    int dx = min_grid_x < 0 ? 0 : min_grid_x;
-    int dy = min_grid_y < 0 ? 0 : min_grid_y;
-    int Dx = max_grid_x < this->grid_size_x_ ? max_grid_x : this->grid_size_x_;
-    int Dy = max_grid_y < this->grid_size_y_ ? max_grid_y : this->grid_size_y_;
+    SubGrid** new_grids = AllocateGrid(extent.size_x, extent.size_y);
+    if (grids_ != nullptr) {
+        const double block = static_cast<double>(grid_reso_);
+        const int offset_x = static_cast<int>(std::llround((static_cast<double>(min_x_) - extent.min_x) / block));
+        const int offset_y = static_cast<int>(std::llround((static_cast<double>(min_y_) - extent.min_y) / block));
 
-    for (int x = dx; x < Dx; x++) {
-        for (int y = dy; y < Dy; y++) {
-            assert((x - min_grid_x) >= 0 && (x - min_grid_x) < temp_grid_size_x);
-            assert((y - min_grid_y) >= 0 && (y - min_grid_y) < temp_grid_size_y);
-
-            assert((x) >= 0 && (x) < temp_grid_size_x);
-            assert((y) >= 0 && (y) < temp_grid_size_y);
-
-            new_grids[x - min_grid_x][y - min_grid_y] = this->grids_[x][y];
+        for (int x = 0; x < grid_size_x_; ++x) {
+            for (int y = 0; y < grid_size_y_; ++y) {
+                new_grids[x + offset_x][y + offset_y] = grids_[x][y];
+            }
         }
-        delete[] this->grids_[x];
+
+        for (int x = 0; x < grid_size_x_; ++x) {
+            delete[] grids_[x];
+        }
+        delete[] grids_;
     }
 
-    delete[] this->grids_;
-    this->grids_ = new_grids;
-    this->min_x_ = temp_min_x;
-    this->min_y_ = temp_min_y;
-    this->max_x_ = temp_max_x;
-    this->max_y_ = temp_max_y;
-    this->grid_size_x_ = temp_grid_size_x;
-    this->grid_size_y_ = temp_grid_size_y;
+    grids_ = new_grids;
+    min_x_ = extent.min_x;
+    min_y_ = extent.min_y;
+    max_x_ = extent.max_x;
+    max_y_ = extent.max_y;
+    grid_size_x_ = extent.size_x;
+    grid_size_y_ = extent.size_y;
 
     return true;
 }
@@ -111,7 +179,7 @@ void G2P5Map::SetHitPoint(const float &px, const float &py, const bool &if_hit, 
         return;
     }
 
-    if (px < min_x_ || px > max_x_ || py < min_y_ || py > max_y_) {
+    if (px < min_x_ || px >= max_x_ || py < min_y_ || py >= max_y_) {
         return;
     }
 
@@ -218,7 +286,7 @@ void G2P5Map::SetMissPoint(const float &point_x, const float &point_y, const flo
 }
 
 bool G2P5Map::GetDataIndex(const float x, const float y, int &x_index, int &y_index) {
-    if (x > max_x_ || x < min_x_ || y > max_y_ || y < min_y_) {
+    if (x >= max_x_ || x < min_x_ || y >= max_y_ || y < min_y_) {
         return false;
     }
     x_index = floor((x - min_x_) / options_.resolution_);

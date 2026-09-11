@@ -11,6 +11,7 @@
 #include <map>
 #include <pcl/filters/impl/voxel_grid.hpp>
 #include <pcl/segmentation/impl/sac_segmentation.hpp>
+#include <utility>
 
 #include "utils/timer.h"
 #include "yaml-cpp/yaml.h"
@@ -48,16 +49,20 @@ void G2P5::RenderFront(Keyframe::Ptr kf) {
         frontend_current_ = kf;
     }
 
+    GridMapDataPtr map_data;
     {
         UL lock{newest_map_mutex_};
 
         lightning::Timer::Evaluate([&]() { AddKfToMap({kf}, frontend_map_); }, "G2P5 Occupancy Mapping", true);
         newest_map_ = frontend_map_;
+        if (map_update_cb_) {
+            map_data = newest_map_->ToGridData();
+        }
     }
 
     /// 向外回调
-    if (map_update_cb_) {
-        map_update_cb_(newest_map_->ToGridData());
+    if (map_data && map_update_cb_) {
+        map_update_cb_(std::move(map_data));
     }
 }
 
@@ -143,16 +148,20 @@ void G2P5::RenderBack() {
             cur_idx = frontend_idx;
         }
 
+        GridMapDataPtr map_data;
         {
             /// 同步前后端地图，替换newest map
             UL lock{newest_map_mutex_};
             frontend_map_ = backend_map_;
             newest_map_ = frontend_map_;
+            if (map_update_cb_) {
+                map_data = newest_map_->ToGridData();
+            }
         }
 
         /// 向外回调
-        if (map_update_cb_) {
-            map_update_cb_(newest_map_->ToGridData());
+        if (map_data && map_update_cb_) {
+            map_update_cb_(std::move(map_data));
         }
 
         is_busy_ = false;
@@ -236,12 +245,12 @@ bool G2P5::ResizeMap(const std::vector<Keyframe::Ptr> &kfs, G2P5MapPtr &map) {
         max_x = (max_x < init_max_x) ? init_max_x : max_x;
         max_y = (max_y < init_max_y) ? init_max_y : max_y;
 
-        float r = map->GetGridResolution();
-        min_x = static_cast<int>((floor)(min_x / r)) * r;
-        min_y = static_cast<int>((floor)(min_y / r)) * r;
-        max_x = static_cast<int>((ceil)(max_x / r)) * r;
-        max_y = static_cast<int>((ceil)(max_y / r)) * r;
-        map->Resize(min_x, min_y, max_x, max_y);
+        // G2P5Map owns the SubGrid geometry and aligns bounds to complete
+        // SubGrid blocks.  Keeping that alignment in one place makes the
+        // origin shift and the copied block offset exactly consistent.
+        if (!map->Resize(min_x, min_y, max_x, max_y)) {
+            return false;
+        }
 
         // LOG(INFO) << "map resized to " << min_x << ", " << min_y << ", " << max_x << ", " << max_y;
     }
