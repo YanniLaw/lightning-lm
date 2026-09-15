@@ -103,7 +103,47 @@ void PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         LOG(INFO) << "optimize finished, loops: " << loop_edges_.size();
     }
 
+    if (data_callback_) {
+        data_callback_(CreateDataSnapshot(optimized));
+    }
+
     last_keyframe_ = keyframe;
+}
+
+PoseGraphDataPtr PoseGraph::CreateDataSnapshot(bool optimized) {
+    auto data = std::make_shared<PoseGraphData>();
+    data->version = ++data_version_;
+    data->optimized = optimized;
+
+    const auto& all_keyframes = keyframes_.GetAll();
+    data->nodes.reserve(all_keyframes.size());
+    for (const auto& keyframe : all_keyframes) {
+        if (!keyframe) {
+            continue;
+        }
+
+        PoseGraphNode node;
+        node.id = keyframe->GetID();
+        node.timestamp = keyframe->GetState().timestamp_;
+        node.pose = keyframe->GetOptPose();
+        data->nodes.emplace_back(std::move(node));
+    }
+
+    data->loop_constraints.reserve(loop_edges_.size());
+    for (const auto& edge : loop_edges_) {
+        if (!edge || edge->GetVertices().size() < 2 || edge->GetVertex(0) == nullptr ||
+            edge->GetVertex(1) == nullptr) {
+            continue;
+        }
+
+        PoseGraphConstraint constraint;
+        constraint.from_id = static_cast<unsigned long>(edge->GetVertex(0)->GetId());
+        constraint.to_id = static_cast<unsigned long>(edge->GetVertex(1)->GetId());
+        constraint.is_outlier = edge->Level() > 0;
+        data->loop_constraints.emplace_back(std::move(constraint));
+    }
+
+    return data;
 }
 
 void PoseGraph::Stop() {

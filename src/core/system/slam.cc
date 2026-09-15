@@ -53,6 +53,9 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         pose_graph_options.online_mode_ = options_.online_mode_;
         pose_graph_ = std::make_shared<PoseGraph>(pose_graph_options);
         pose_graph_->Init(yaml_path);
+        if (pose_graph_data_callback_) {
+            pose_graph_->SetDataCallback(pose_graph_data_callback_);
+        }
     }
 
     if (nav_state_callback_) {
@@ -288,6 +291,13 @@ void SlamSystem::SetKeyframeCallback(std::function<void(const Keyframe::Ptr&)> c
 
 void SlamSystem::SetGridMapCallback(std::function<void(GridMapDataPtr)> callback) {
     grid_map_callback_ = std::move(callback);
+}
+
+void SlamSystem::SetPoseGraphDataCallback(std::function<void(PoseGraphDataPtr)> callback) {
+    pose_graph_data_callback_ = std::move(callback);
+    if (pose_graph_) {
+        pose_graph_->SetDataCallback(pose_graph_data_callback_);
+    }
 }
 
 sys::SensorDispatcher::Stats SlamSystem::GetInputStats() const {

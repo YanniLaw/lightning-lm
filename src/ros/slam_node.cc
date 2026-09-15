@@ -2,6 +2,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <utility>
+
 #include "lightning/srv/save_map.hpp"
 #include "ros/ros_visualization.h"
 #include "ros/sensor_bridge.h"
@@ -97,6 +99,11 @@ bool SlamNode::Init() {
         system_->SetLIODataCallback([this](const LIOData& data) {
             if (visualization_) {
                 visualization_->PublishLIOData(data);
+            }
+        });
+        system_->SetPoseGraphDataCallback([this](PoseGraphDataPtr data) {
+            if (visualization_) {
+                visualization_->PublishPoseGraph(std::move(data));
             }
         });
         system_->SetGridMapCallback([this](GridMapDataPtr map) {

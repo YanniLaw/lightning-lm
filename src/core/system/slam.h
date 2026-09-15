@@ -15,6 +15,7 @@
 #include "common/grid_map_data.h"
 #include "common/imu.h"
 #include "common/keyframe.h"
+#include "common/pose_graph_data.h"
 #include "common/sensor_data.h"
 #include "core/lio/lio_data.h"
 #include "core/loop_closing/pose_graph.h"
@@ -75,6 +76,7 @@ class SlamSystem {
     void SetScanCallback(std::function<void(const CloudPtr&, const SE3&)> callback);
     void SetKeyframeCallback(std::function<void(const Keyframe::Ptr&)> callback);
     void SetGridMapCallback(std::function<void(GridMapDataPtr)> callback);
+    void SetPoseGraphDataCallback(std::function<void(PoseGraphDataPtr)> callback);
 
     sys::SensorDispatcher::Stats GetInputStats() const;
 
@@ -101,6 +103,7 @@ class SlamSystem {
     std::function<void(const CloudPtr&, const SE3&)> scan_callback_;
     std::function<void(const Keyframe::Ptr&)> keyframe_callback_;
     std::function<void(GridMapDataPtr)> grid_map_callback_;
+    std::function<void(PoseGraphDataPtr)> pose_graph_data_callback_;
     std::unique_ptr<sys::SensorDispatcher> sensor_dispatcher_;
 };
 }  // namespace lightning

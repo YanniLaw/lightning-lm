@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -17,6 +18,7 @@
 #include "common/eigen_types.h"
 #include "common/keyframe.h"
 #include "common/loop_candidate.h"
+#include "common/pose_graph_data.h"
 #include "core/loop_closing/keyframe_collection.h"
 #include "core/loop_closing/loop_closing.h"
 #include "utils/async_message_process.h"
@@ -73,10 +75,21 @@ class PoseGraph {
     void Stop();
 
     using OptimizedCallback = std::function<void()>;
-    void SetOptimizedCallback(OptimizedCallback callback) { optimized_callback_ = std::move(callback); }
+    void SetOptimizedCallback(OptimizedCallback callback) {
+        optimized_callback_ = std::move(callback);
+    }
+
+    // Delivers a complete pose graph snapshot after each accepted keyframe.
+    // The snapshot is marked optimized when loop optimization has completed.
+    using DataCallback = std::function<void(PoseGraphDataPtr)>;
+    void SetDataCallback(DataCallback callback) {
+        data_callback_ = std::move(callback);
+    }
 
    private:
     void HandleKeyframe(const Keyframe::Ptr& keyframe);
+
+    PoseGraphDataPtr CreateDataSnapshot(bool optimized);
 
     // Adds one graph node and its constraints, then optimizes when a valid
     // loop constraint is present. Returns true after pose write-back.
@@ -93,6 +106,8 @@ class PoseGraph {
 
     Keyframe::Ptr last_keyframe_;
     OptimizedCallback optimized_callback_;
+    DataCallback data_callback_;
+    std::uint64_t data_version_ = 0;
 
     std::shared_ptr<miao::Optimizer> optimizer_;
 

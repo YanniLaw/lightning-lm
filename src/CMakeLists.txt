@@ -85,6 +85,7 @@ if (LIGHTNING_WITH_ROS)
             "geometry_msgs"
             "sensor_msgs"
             "nav_msgs"
+            "visualization_msgs"
             "std_srvs"
             "message_filters"
             "pcl_conversions"
