@@ -90,7 +90,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 SlamSystem::~SlamSystem() { Stop(); }
 
 void SlamSystem::StartSLAM(/*std::string map_name*/) {
-    // map_name_ = map_name;
+    map_name_ = "new_map";
     running_ = true;
     if (options_.online_mode_ && sensor_dispatcher_) {
         sensor_dispatcher_->Start();
@@ -102,6 +102,7 @@ void SlamSystem::SaveMap(const std::string& path) {
     std::string save_path = path;
     if (save_path.empty()) {
         save_path = "./data/" + map_name_ + "/";
+        LOG(WARNING) << "save path is empty, using default path: " << save_path;
     }
 
     LOG(INFO) << "slam map saving to " << save_path;

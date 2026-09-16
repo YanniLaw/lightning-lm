@@ -52,6 +52,7 @@ bool LocalizationNode::Init() {
     LocSystem::Options options;
     options.pub_tf_ = yaml["system"]["pub_tf"] ? yaml["system"]["pub_tf"].as<bool>() : true;
     system_ = std::make_shared<LocSystem>(options);
+
     const bool with_ui = yaml["system"]["with_ui"] ? yaml["system"]["with_ui"].as<bool>() : false;
     if (with_ui) {
         ui_ = std::make_shared<ui::PangolinWindow>();
@@ -62,19 +63,40 @@ bool LocalizationNode::Init() {
             system_.reset();
             return false;
         }
+    }
+
+    const bool with_rviz = yaml["system"]["with_rviz"] ? yaml["system"]["with_rviz"].as<bool>() : false;
+    if (with_rviz) {
+        const double local_map_publish_hz = yaml["system"]["rviz_local_map_publish_hz"]
+                                                ? yaml["system"]["rviz_local_map_publish_hz"].as<double>()
+                                                : 2.0;
+        const std::size_t local_map_max_scans = yaml["system"]["rviz_local_map_max_scans"]
+                                                    ? yaml["system"]["rviz_local_map_max_scans"].as<std::size_t>()
+                                                    : 200;
+        const double path_publish_hz = yaml["system"]["rviz_path_publish_hz"]
+                                           ? yaml["system"]["rviz_path_publish_hz"].as<double>()
+                                           : 10.0;
+        visualization_ = std::make_shared<RosLocalizationVisualization>(
+            shared_from_this(), local_map_publish_hz, local_map_max_scans, path_publish_hz);
+    }
+
+    // Fan out each core callback so Pangolin and RViz can consume the same
+    // localization output without replacing one another's handlers.
+    if (ui_ || visualization_) {
         system_->SetNavStateCallback([this](const NavState& state) {
             if (ui_) {
                 ui_->UpdateNavState(state);
             }
-        });
-        system_->SetRecentPoseCallback([this](const SE3& pose) {
-            if (ui_) {
-                ui_->UpdateRecentPose(pose);
+            if (visualization_) {
+                visualization_->PublishNavState(state);
             }
         });
         system_->SetScanCallback([this](const CloudPtr& cloud, const SE3& pose) {
             if (ui_) {
                 ui_->UpdateScan(cloud, pose);
+            }
+            if (visualization_) {
+                visualization_->PublishScan(cloud, pose);
             }
         });
         system_->SetMapUpdateCallback(
@@ -84,10 +106,21 @@ bool LocalizationNode::Init() {
                     ui_->UpdatePointCloudGlobal(static_cloud);
                     ui_->UpdatePointCloudDynamic(dynamic_cloud);
                 }
+                if (visualization_) {
+                    visualization_->PublishMap(static_cloud, dynamic_cloud);
+                }
             });
+    }
+    if (ui_) {
+        system_->SetRecentPoseCallback([this](const SE3& pose) {
+            if (ui_) {
+                ui_->UpdateRecentPose(pose);
+            }
+        });
     }
 
     if (!system_->Init(config_path_)) {
+        visualization_.reset();
         ui_.reset();
         system_.reset();
         return false;
@@ -155,6 +188,9 @@ void LocalizationNode::HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstShare
 
 void LocalizationNode::Stop() {
     if (!system_) {
+        tf_broadcaster_.reset();
+        visualization_.reset();
+        ui_.reset();
         return;
     }
     imu_subscription_.reset();
@@ -169,6 +205,7 @@ void LocalizationNode::Stop() {
                 stats.rejected_invalid, stats.rejected_time, stats.rejected_queue_full,
                 stats.incomplete_scans);
     tf_broadcaster_.reset();
+    visualization_.reset();
     ui_.reset();
     system_.reset();
 }

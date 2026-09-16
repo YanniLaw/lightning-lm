@@ -12,6 +12,7 @@
 
 #include "core/system/loc_system.h"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "ros/ros_localization_visualization.h"
 #include "ui/pangolin_window.h"
 
 namespace lightning::ros {
@@ -36,6 +37,7 @@ class LocalizationNode final : public rclcpp::Node {
     double velodyne_time_scale_ = 1e-3;
     std::shared_ptr<LocSystem> system_;
     std::shared_ptr<ui::PangolinWindow> ui_;
+    std::shared_ptr<RosLocalizationVisualization> visualization_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;

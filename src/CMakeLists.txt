@@ -73,6 +73,7 @@ if (LIGHTNING_WITH_ROS)
             ros/sensor_bridge.cc
             ros/ros_conversions.cc
             ros/ros_visualization.cc
+            ros/ros_localization_visualization.cc
             ros/slam_node.cc
             ros/localization_node.cc
             wrapper/bag_io.cc
