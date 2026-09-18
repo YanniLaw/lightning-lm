@@ -1,7 +1,10 @@
 #include "ros/slam_node.h"
 
+#include <glog/logging.h>
 #include <yaml-cpp/yaml.h>
 
+#include <chrono>
+#include <mutex>
 #include <utility>
 
 #include "lightning/srv/save_map.hpp"
@@ -10,6 +13,18 @@
 
 namespace lightning::ros {
 namespace {
+
+bool ShouldLogWarning(std::chrono::steady_clock::time_point& last_log_time) {
+    static std::mutex mutex;
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(mutex);
+    if (last_log_time == std::chrono::steady_clock::time_point::min() ||
+        now - last_log_time >= std::chrono::seconds(5)) {
+        last_log_time = now;
+        return true;
+    }
+    return false;
+}
 
 bool ReadLidarType(const YAML::Node& yaml, LidarType& type) {
     const int value = yaml["fasterlio"]["lidar_type"].as<int>();
@@ -43,12 +58,12 @@ bool SlamNode::Init() {
     try {
         yaml = YAML::LoadFile(config_path_);
         if (!ReadLidarType(yaml, lidar_type_)) {
-            RCLCPP_ERROR(get_logger(), "unsupported fasterlio.lidar_type");
+            LOG(ERROR) << "unsupported fasterlio.lidar_type";
             return false;
         }
         velodyne_time_scale_ = yaml["fasterlio"]["time_scale"].as<double>();
     } catch (const std::exception& exception) {
-        RCLCPP_ERROR(get_logger(), "failed to read config: %s", exception.what());
+        LOG(ERROR) << "failed to read config: " << exception.what();
         return false;
     }
 
@@ -65,7 +80,7 @@ bool SlamNode::Init() {
         LOG(INFO) << "slam with 3D UI";
         ui_ = std::make_shared<ui::PangolinWindow>();
         if (!ui_->Init()) {
-            RCLCPP_ERROR(get_logger(), "failed to initialize Pangolin UI");
+            LOG(ERROR) << "failed to initialize Pangolin UI";
             ui_.reset();
             system_.reset();
             return false;
@@ -127,6 +142,17 @@ bool SlamNode::Init() {
         livox_topic, qos,
         [this](livox_ros_driver2::msg::CustomMsg::ConstSharedPtr message) { HandleLivox(std::move(message)); });
 
+    const bool wheel_odometry_enabled = yaml["common"]["enable_wheel_odom"].as<bool>();
+    if (wheel_odometry_enabled) {
+        const std::string wheel_odometry_topic = yaml["common"]["wheel_odom_topic"].as<std::string>();
+        wheel_odometry_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
+            wheel_odometry_topic, qos,
+            [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
+                HandleWheelOdometry(std::move(message));
+            });
+        LOG(INFO) << "wheel odometry input enabled on " << wheel_odometry_topic << " (not fused)";
+    }
+
     save_map_service_ = create_service<srv::SaveMap>(
         "lightning/save_map",
         [this](const srv::SaveMap::Request::SharedPtr request,
@@ -141,7 +167,7 @@ bool SlamNode::Init() {
         });
 
     system_->StartSLAM();
-    RCLCPP_INFO(get_logger(), "SLAM ROS node has been created");
+    LOG(INFO) << "SLAM ROS node has been created";
     return true;
 }
 
@@ -175,6 +201,34 @@ void SlamNode::HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr mes
     }
 }
 
+void SlamNode::HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr message) {
+    if (!system_ || !message) {
+        return;
+    }
+
+    WheelOdometryData data;
+    if (!ToWheelOdometryData(*message, data)) {
+        static auto last_invalid_message_log = std::chrono::steady_clock::time_point::min();
+        if (ShouldLogWarning(last_invalid_message_log)) {
+            LOG(WARNING) << "reject invalid wheel odometry message";
+        }
+        return;
+    }
+
+    const LIOInputStatus status = system_->ProcessWheelOdometry(data);
+    if (status == LIOInputStatus::kUnsupported) {
+        static auto last_unsupported_log = std::chrono::steady_clock::time_point::min();
+        if (ShouldLogWarning(last_unsupported_log)) {
+            LOG(WARNING) << "wheel odometry received but is not fused by the current frontend";
+        }
+    } else if (status != LIOInputStatus::kAccepted) {
+        static auto last_rejected_log = std::chrono::steady_clock::time_point::min();
+        if (ShouldLogWarning(last_rejected_log)) {
+            LOG(WARNING) << "wheel odometry rejected with status " << static_cast<int>(status);
+        }
+    }
+}
+
 void SlamNode::Stop() {
     if (!system_) {
         return;
@@ -182,15 +236,15 @@ void SlamNode::Stop() {
     imu_subscription_.reset();
     cloud_subscription_.reset();
     livox_subscription_.reset();
+    wheel_odometry_subscription_.reset();
     save_map_service_.reset();
     system_->Stop();
     const auto stats = system_->GetInputStats();
-    RCLCPP_INFO(get_logger(),
-                "sensor input stats: imu accepted=%zu processed=%zu, scans accepted=%zu processed=%zu, "
-                "invalid=%zu time_rejected=%zu queue_full=%zu incomplete=%zu",
-                stats.accepted_imu, stats.processed_imu, stats.accepted_scans, stats.processed_scans,
-                stats.rejected_invalid, stats.rejected_time, stats.rejected_queue_full,
-                stats.incomplete_scans);
+    LOG(INFO) << "sensor input stats: imu accepted=" << stats.accepted_imu
+              << " processed=" << stats.processed_imu << ", scans accepted=" << stats.accepted_scans
+              << " processed=" << stats.processed_scans << ", invalid=" << stats.rejected_invalid
+              << " time_rejected=" << stats.rejected_time << " queue_full=" << stats.rejected_queue_full
+              << " incomplete=" << stats.incomplete_scans;
     visualization_.reset();
     ui_.reset();
     system_.reset();

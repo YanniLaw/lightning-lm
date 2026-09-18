@@ -1,5 +1,6 @@
 #include "ros/localization_node.h"
 
+#include <glog/logging.h>
 #include <yaml-cpp/yaml.h>
 
 #include "ros/ros_conversions.h"
@@ -40,12 +41,12 @@ bool LocalizationNode::Init() {
     try {
         yaml = YAML::LoadFile(config_path_);
         if (!ReadLidarType(yaml, lidar_type_)) {
-            RCLCPP_ERROR(get_logger(), "unsupported fasterlio.lidar_type");
+            LOG(ERROR) << "unsupported fasterlio.lidar_type";
             return false;
         }
         velodyne_time_scale_ = yaml["fasterlio"]["time_scale"].as<double>();
     } catch (const std::exception& exception) {
-        RCLCPP_ERROR(get_logger(), "failed to read config: %s", exception.what());
+        LOG(ERROR) << "failed to read config: " << exception.what();
         return false;
     }
 
@@ -58,7 +59,7 @@ bool LocalizationNode::Init() {
         ui_ = std::make_shared<ui::PangolinWindow>();
         ui_->SetCurrentScanSize(1);
         if (!ui_->Init()) {
-            RCLCPP_ERROR(get_logger(), "failed to initialize Pangolin UI");
+            LOG(ERROR) << "failed to initialize Pangolin UI";
             ui_.reset();
             system_.reset();
             return false;
@@ -152,7 +153,7 @@ bool LocalizationNode::Init() {
     // Preserve the historical online behavior: localization starts from the
     // identity pose unless an application supplies a control API later.
     system_->SetInitPose(SE3());
-    RCLCPP_INFO(get_logger(), "localization ROS node has been created");
+    LOG(INFO) << "localization ROS node has been created";
     return true;
 }
 
@@ -198,12 +199,11 @@ void LocalizationNode::Stop() {
     livox_subscription_.reset();
     system_->Stop();
     const auto stats = system_->GetInputStats();
-    RCLCPP_INFO(get_logger(),
-                "sensor input stats: imu accepted=%zu processed=%zu, scans accepted=%zu processed=%zu, "
-                "invalid=%zu time_rejected=%zu queue_full=%zu incomplete=%zu",
-                stats.accepted_imu, stats.processed_imu, stats.accepted_scans, stats.processed_scans,
-                stats.rejected_invalid, stats.rejected_time, stats.rejected_queue_full,
-                stats.incomplete_scans);
+    LOG(INFO) << "sensor input stats: imu accepted=" << stats.accepted_imu
+              << " processed=" << stats.processed_imu << ", scans accepted=" << stats.accepted_scans
+              << " processed=" << stats.processed_scans << ", invalid=" << stats.rejected_invalid
+              << " time_rejected=" << stats.rejected_time << " queue_full=" << stats.rejected_queue_full
+              << " incomplete=" << stats.incomplete_scans;
     tf_broadcaster_.reset();
     visualization_.reset();
     ui_.reset();

@@ -1,21 +1,30 @@
-#ifndef FASTER_LIO_LASER_MAPPING_H
-#define FASTER_LIO_LASER_MAPPING_H
+#ifndef LIGHTNING_AA_FASTERLIO_LASER_MAPPING_H
+#define LIGHTNING_AA_FASTERLIO_LASER_MAPPING_H
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <pcl/filters/voxel_grid.h>
-#include <condition_variable>
-#include <functional>
-#include <utility>
-#include <thread>
 
 #include "common/eigen_types.h"
 #include "common/imu.h"
-#include "common/keyframe.h"
 #include "common/options.h"
+#include "common/std_types.h"
 #include "core/ivox3d/ivox3d.h"
-#include "core/lio/eskf.hpp"
-#include "core/lio/imu_processing.hpp"
-#include "core/lio/lio_data.h"
-#include "pointcloud_preprocess.h"
+#include "core/lio/aa-fasterlio/eskf.hpp"
+#include "core/lio/aa-fasterlio/imu_processing.hpp"
+#include "core/lio/keyframe_selector.h"
+#include "core/lio/aa-fasterlio/pointcloud_preprocess.h"
+#include "core/lio/lio.h"
+#include "core/lio/scan_accumulator.h"
 
 namespace lightning {
 
@@ -24,7 +33,7 @@ namespace lightning {
  * 目前有个问题：点云在缓存之后，实际处理的并不是最新的那个点云（通常是buffer里的前一个），这是因为bag里的点云用的开始时间戳，导致
  * 点云的结束时间要比IMU多0.1s左右。为了同步最近的IMU，就只能处理缓冲队列里的那个点云，而不是最新的点云
  */
-class LaserMapping {
+class LaserMapping final : public LIO {
    public:
     struct Options {
         Options() {}
@@ -50,80 +59,44 @@ class LaserMapping {
     using IVoxType = IVox<3, IVoxNodeType::DEFAULT, PointType>;
 
     LaserMapping(Options options = Options());
-    ~LaserMapping() {
-        scan_down_body_ = nullptr;
-        scan_undistort_ = nullptr;
-        scan_down_world_ = nullptr;
-        LOG(INFO) << "laser mapping deconstruct";
-    }
+    ~LaserMapping() override;
 
     /// init without ros
-    bool Init(const std::string &config_yaml);
+    bool Init(const std::string& config_yaml);
+    bool Init(const std::string& config_yaml, const LIOOptions& options) override;
 
-    bool Run();
+    LIOCapabilities GetCapabilities() const override { return {true, false}; }
 
-    // callbacks of lidar and imu
-    /// Process a transport-independent scan.  ROS adapters should convert
-    /// messages before calling this method.
-    bool ProcessPointCloud(const TimedPointCloudData& scan);
-
-    /// 如果已经做了预处理，也可以直接处理点云
-    void ProcessPointCloud(CloudPtr cloud);
-
-    void ProcessIMU(const lightning::IMUPtr &msg_in);
-
-    /// 保存前端的地图
-    void SaveMap();
-
-    using LIODataCallback = std::function<void(const LIOData&)>;
-    void SetLIODataCallback(LIODataCallback callback) { lio_data_callback_ = std::move(callback); }
-    using NavStateCallback = std::function<void(const NavState&)>;
-    using ScanCallback = std::function<void(const CloudPtr&, const SE3&)>;
-    void SetNavStateCallback(NavStateCallback callback) { nav_state_callback_ = std::move(callback); }
-    void SetScanCallback(ScanCallback callback) { scan_callback_ = std::move(callback); }
-
-    /// 获取关键帧
-    Keyframe::Ptr GetKeyframe() const { return last_kf_; }
-
-    /// 获取激光的状态
-    NavState GetState() const { return state_point_; }
-
-    /// Whether a scan is buffered and may become processable after another IMU sample.
-    bool HasPendingLidar() const { return lidar_pushed_ || !lidar_buffer_.empty(); }
-
-    /// 获取IMU状态
-    NavState GetIMUState() const {
-        if (p_imu_->IsIMUInited()) {
-            return kf_imu_.GetX();
-        } else {
-            NavState s;
-            s.pose_is_ok_ = false;
-            return s;
-        }
+    void SetResultCallback(ResultCallback callback) override {
+        result_callback_ = std::move(callback);
+    }
+    void SetPredictionCallback(PredictionCallback callback) override {
+        prediction_callback_ = std::move(callback);
+    }
+    void SetDataCallback(DataCallback callback) override {
+        lio_data_callback_ = std::move(callback);
     }
 
-    CloudPtr GetScanUndist() const { return scan_undistort_; }
-    CloudPtr GetProjCloud();
-
-    /// 获取最新的点云
-    CloudPtr GetRecentCloud();
-
-    std::vector<Keyframe::Ptr> GetAllKeyframes() { return all_keyframes_; }
-
-    /**
-     * 计算全局地图
-     * @param use_lio_pose
-     * @return
-     */
-    CloudPtr GetGlobalMap(bool use_lio_pose, bool use_voxel = true, float res = 0.1);
+    LIOInputStatus AddImu(const IMUPtr& imu) override;
+    LIOInputStatus AddPointCloud(const TimedPointCloudData& scan) override;
+    LIOInputStatus AddWheelOdometry(const WheelOdometryData& data) override;
+    void Stop() override;
 
    private:
+    bool Run();
+    bool HasPendingLidar() const { return lidar_pushed_ || !lidar_buffer_.empty(); }
+
+    // These methods are implementation details behind the transport-neutral
+    // AddImu() and AddPointCloud() entry points.
+    bool ProcessPointCloud(const TimedPointCloudData& scan);
+    void ProcessIMU(const IMUPtr& imu);
+
     // sync lidar with imu
     bool SyncPackages();
 
-    void ObsModel(NavState &s, ESKF::CustomObservationModel &obs);
+    void ObsModel(NavState& s, ESKF::CustomObservationModel& obs);
 
-    inline void PointBodyToWorld(const PointType &pi, PointType &po) {
+    inline void PointBodyToWorld(const PointType& pi, PointType& po) {
         Vec3d p_global(state_point_.rot_ *
                            (offset_R_lidar_fixed_ * pi.getVector3fMap().cast<double>() + offset_t_lidar_fixed_) +
                        state_point_.pos_);
@@ -140,13 +113,12 @@ class LaserMapping {
 
     bool LoadParamsFromYAML(const std::string &yaml);
 
-    /// 创建关键帧
-    void MakeKF();
+    /// Select a frontend-local keyframe without allocating a backend ID.
+    bool SelectKeyframe();
 
-    /// 将附近的关键帧投影至cloud中
-    void ProjectKFs(CloudPtr cloud, int size_limit = 1000);
+    void NotifyPrediction(const NavState& state);
+    void NotifyResult(const NavState& state, LIOUpdateType update_type, bool keyframe_selected);
 
-   private:
     Options options_;
 
     /// modules
@@ -154,9 +126,9 @@ class LaserMapping {
     std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
     std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // point cloud preprocess
     std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // imu process
-    LIODataCallback lio_data_callback_;
-    NavStateCallback nav_state_callback_;
-    ScanCallback scan_callback_;
+    DataCallback lio_data_callback_;
+    ResultCallback result_callback_;
+    PredictionCallback prediction_callback_;
 
     /// local map related
     double filter_size_map_min_ = 0;
@@ -168,14 +140,10 @@ class LaserMapping {
     Vec3d offset_t_lidar_fixed_ = Vec3d::Zero();
     std::string map_file_path_;
 
-    std::vector<Keyframe::Ptr> all_keyframes_;
-    Keyframe::Ptr last_kf_ = nullptr;
-    int kf_id_ = 0;
-
     /// point clouds data
-    CloudPtr scan_undistort_{new PointCloudType()};   // scan after undistortion
-    CloudPtr scan_down_body_{new PointCloudType()};   // downsampled scan in body
-    CloudPtr scan_down_world_{new PointCloudType()};  // downsampled scan in world
+    CloudPtr scan_undistort_{new PointCloudType()};   // scan after undistortion, in the LiDAR frame
+    CloudPtr scan_down_body_{new PointCloudType()};   // downsampled scan, in the LiDAR frame
+    CloudPtr scan_down_world_{new PointCloudType()};  // downsampled scan, in the local frame
     pcl::VoxelGrid<PointType> voxel_scan_;            // voxel filter for current scan
 
     /// 点面相关
@@ -229,10 +197,14 @@ class LaserMapping {
 
     bool use_aa_ = false;  // use anderson acceleration?
 
-    std::list<Keyframe::Ptr> proj_kfs_;  // 投影到当前帧的关键帧
+    KeyframeSelector keyframe_selector_;
+    ScanAccumulator scan_accumulator_;
+
+    std::atomic_bool running_ = false;
+    bool last_keyframe_selected_ = false;
 
 };
 
 }  // namespace lightning
 
-#endif  // FASTER_LIO_LASER_MAPPING_H
+#endif  // LIGHTNING_AA_FASTERLIO_LASER_MAPPING_H

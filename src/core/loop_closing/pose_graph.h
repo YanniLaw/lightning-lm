@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,8 +20,11 @@
 #include "common/keyframe.h"
 #include "common/loop_candidate.h"
 #include "common/pose_graph_data.h"
+#include "common/wheel_odometry_data.h"
+#include "core/lio/lio.h"
 #include "core/loop_closing/keyframe_collection.h"
 #include "core/loop_closing/loop_closing.h"
+#include "core/maps/keyframe_map.h"
 #include "utils/async_message_process.h"
 
 namespace lightning::miao {
@@ -39,6 +43,7 @@ class PoseGraph {
 
         bool verbose_ = true;       // 输出调试信息
         bool online_mode_ = false;  // 切换离线-在线模式
+        bool enable_loop_closing_ = true;  // Whether to run loop detection and graph optimization.
 
         int loop_kf_gap_ = 20;          // 每隔多少个关键帧检查一次
         int min_id_interval_ = 20;      // 被检查的关键帧ID间隔
@@ -69,7 +74,15 @@ class PoseGraph {
 
     // Queues a keyframe for online processing or handles it synchronously in
     // offline mode.
-    void AddKeyframe(Keyframe::Ptr keyframe);
+    /// Accepts a scan-matched frontend result and assigns the backend ID.
+    Keyframe::Ptr AddKeyframe(const LIOResult& result);
+
+    /// Wheel input is reserved for future graph constraints.
+    LIOInputStatus AddWheelOdometry(const WheelOdometryData& data);
+
+    /// Returns a deep, lock-independent copy of the map fields in ID order.
+    /// The snapshot is serialized with backend optimization.
+    std::vector<KeyframeMapEntry> GetMapSnapshot() const;
 
     // Stops accepting new keyframes and drains the online queue.
     void Stop();
@@ -89,6 +102,7 @@ class PoseGraph {
    private:
     void HandleKeyframe(const Keyframe::Ptr& keyframe);
 
+    // Caller holds backend_mutex_.
     PoseGraphDataPtr CreateDataSnapshot(bool optimized);
 
     // Adds one graph node and its constraints, then optimizes when a valid
@@ -99,6 +113,11 @@ class PoseGraph {
     Options options_;
     bool initialized_ = false;
     std::atomic_bool accepting_{false};
+    mutable std::mutex accepting_mutex_;
+    mutable std::mutex backend_mutex_;
+    std::uint64_t next_keyframe_id_ = 0;
+    double last_accepted_timestamp_ = -1.0;
+    std::vector<Keyframe::Ptr> accepted_keyframes_;
 
     KeyframeCollection keyframes_;
     LoopClosing loop_closing_;

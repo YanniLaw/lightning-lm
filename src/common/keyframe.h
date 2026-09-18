@@ -5,6 +5,10 @@
 #ifndef LIGHTNING_KEYFRAME_H
 #define LIGHTNING_KEYFRAME_H
 
+#include <memory>
+#include <mutex>
+#include <utility>
+
 #include "common/eigen_types.h"
 #include "common/nav_state.h"
 #include "common/point_def.h"
@@ -18,17 +22,15 @@ class Keyframe {
    public:
     using Ptr = std::shared_ptr<Keyframe>;
 
-    Keyframe() {}
+    Keyframe() = default;
     Keyframe(unsigned long id, CloudPtr cloud, NavState state)
-        : id_(id), cloud_(cloud), state_(state), pose_lio_(state.GetPose()) {
-        timestamp_ = state_.timestamp_;
-        pose_opt_ = pose_lio_;
-    }
+        : id_(id), timestamp_(state.timestamp_), cloud_(std::move(cloud)), pose_lio_(state.GetPose()),
+          pose_opt_(pose_lio_), state_(std::move(state)) {}
 
     unsigned long GetID() const { return id_; }
     CloudPtr GetCloud() const { return cloud_; }
 
-    SE3 GetLIOPose() {
+    SE3 GetLIOPose() const {
         UL lock(data_mutex_);
         return pose_lio_;
     }
@@ -41,7 +43,7 @@ class Keyframe {
         pose_opt_ = pose_lio_;
     }
 
-    SE3 GetOptPose() {
+    SE3 GetOptPose() const {
         UL lock(data_mutex_);
         return pose_opt_;
     }
@@ -56,7 +58,7 @@ class Keyframe {
         state_ = s;
     }
 
-    NavState GetState() {
+    NavState GetState() const {
         UL lock(data_mutex_);
         return state_;
     }
@@ -67,7 +69,7 @@ class Keyframe {
     double timestamp_ = 0;
     CloudPtr cloud_ = nullptr;  /// 降采样之后的点云
 
-    std::mutex data_mutex_;
+    mutable std::mutex data_mutex_;
     SE3 pose_lio_;  // 前端的pose
     SE3 pose_opt_;  // 后端优化后的pose
 

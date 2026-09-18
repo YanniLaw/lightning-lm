@@ -4,6 +4,10 @@
 
 #include "core/loop_closing/pose_graph.h"
 
+#include <pcl/common/transforms.h>
+
+#include "core/lio/lio_result_conversion.h"
+
 #include "core/miao/core/graph/optimizer.h"
 #include "core/miao/core/opti_algo/algo_select.h"
 #include "core/miao/core/robust_kernel/cauchy.h"
@@ -14,6 +18,7 @@
 
 #include <glog/logging.h>
 
+#include <limits>
 #include <utility>
 
 namespace lightning {
@@ -27,7 +32,7 @@ void PoseGraph::Init(const std::string& yaml_path) {
         return;
     }
 
-    if (!yaml_path.empty()) {
+    if (!yaml_path.empty() && options_.enable_loop_closing_) {
         YAML_IO yaml(yaml_path);
         options_.loop_kf_gap_ = yaml.GetValue<int>("loop_closing", "loop_kf_gap");
         options_.min_id_interval_ = yaml.GetValue<int>("loop_closing", "min_id_interval");
@@ -37,20 +42,24 @@ void PoseGraph::Init(const std::string& yaml_path) {
         options_.with_height_ = yaml.GetValue<bool>("loop_closing", "with_height");
     }
 
-    LoopClosing::Options loop_options;
-    loop_options.verbose_ = options_.verbose_;
-    loop_options.loop_kf_gap_ = options_.loop_kf_gap_;
-    loop_options.min_id_interval_ = options_.min_id_interval_;
-    loop_options.closest_id_th_ = options_.closest_id_th_;
-    loop_options.max_range_ = options_.max_range_;
-    loop_options.ndt_score_th_ = options_.ndt_score_th_;
-    loop_closing_.SetOptions(loop_options);
+    if (options_.enable_loop_closing_) {
+        LoopClosing::Options loop_options;
+        loop_options.verbose_ = options_.verbose_;
+        loop_options.loop_kf_gap_ = options_.loop_kf_gap_;
+        loop_options.min_id_interval_ = options_.min_id_interval_;
+        loop_options.closest_id_th_ = options_.closest_id_th_;
+        loop_options.max_range_ = options_.max_range_;
+        loop_options.ndt_score_th_ = options_.ndt_score_th_;
+        loop_closing_.SetOptions(loop_options);
+    }
 
-    /// setup miao
-    miao::OptimizerConfig config(miao::AlgorithmType::LEVENBERG_MARQUARDT,
-                                 miao::LinearSolverType::LINEAR_SOLVER_SPARSE_EIGEN, false);
-    config.incremental_mode_ = true;
-    optimizer_ = miao::SetupOptimizer<6, 3>(config);
+    if (options_.enable_loop_closing_) {
+        /// setup miao
+        miao::OptimizerConfig config(miao::AlgorithmType::LEVENBERG_MARQUARDT,
+                                     miao::LinearSolverType::LINEAR_SOLVER_SPARSE_EIGEN, false);
+        config.incremental_mode_ = true;
+        optimizer_ = miao::SetupOptimizer<6, 3>(config);
+    }
 
     info_motion_.setIdentity();
     info_motion_.block<3, 3>(0, 0) =
@@ -69,45 +78,137 @@ void PoseGraph::Init(const std::string& yaml_path) {
 
     if (options_.online_mode_) {
         LOG(INFO) << "pose graph is running in online mode";
+        // Accepted backend nodes must not be silently discarded while the
+        // optimizer catches up with the frontend.
+        keyframe_thread_.SetMaxSize(std::numeric_limits<std::size_t>::max());
         keyframe_thread_.SetProcFunc([this](const Keyframe::Ptr& keyframe) { HandleKeyframe(keyframe); });
         keyframe_thread_.SetName("handle loop closure");
         keyframe_thread_.Start();
     }
 }
 
-void PoseGraph::AddKeyframe(Keyframe::Ptr keyframe) {
-    if (!accepting_.load() || !keyframe) {
-        return;
+Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
+    if (result.update_type != LIOUpdateType::kScanMatched || !result.keyframe_selected ||
+        !result.state.pose_is_valid || !result.cloud || result.cloud->empty() ||
+        !result.body_from_lidar.matrix().allFinite()) {
+        return nullptr;
     }
 
-    if (options_.online_mode_) {
-        keyframe_thread_.AddMessage(keyframe);
-    } else {
+    for (const PointType& point : result.cloud->points) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
+            !std::isfinite(point.intensity)) {
+            return nullptr;
+        }
+    }
+
+    NavState state;
+    if (!ConvertToNavState(result.state, state)) {
+        return nullptr;
+    }
+
+    Keyframe::Ptr keyframe;
+    {
+        std::lock_guard<std::mutex> lock(accepting_mutex_);
+        if (!accepting_.load() || result.state.timestamp <= last_accepted_timestamp_) {
+            return nullptr;
+        }
+
+        auto cloud = std::make_shared<PointCloudType>();
+        pcl::transformPointCloud(*result.cloud, *cloud, result.body_from_lidar.matrix());
+        keyframe = std::make_shared<Keyframe>(static_cast<unsigned long>(next_keyframe_id_++), cloud, state);
+        accepted_keyframes_.emplace_back(keyframe);
+        last_accepted_timestamp_ = result.state.timestamp;
+
+        if (options_.online_mode_) {
+            keyframe_thread_.AddMessage(keyframe);
+        }
+    }
+
+    if (!options_.online_mode_) {
         HandleKeyframe(keyframe);
     }
+    return keyframe;
+}
+
+LIOInputStatus PoseGraph::AddWheelOdometry(const WheelOdometryData& data) {
+    if (data.timestamp_ns <= 0) {
+        return LIOInputStatus::kInvalidData;
+    }
+    if (!accepting_.load()) {
+        return LIOInputStatus::kNotRunning;
+    }
+    return LIOInputStatus::kUnsupported;
+}
+
+std::vector<KeyframeMapEntry> PoseGraph::GetMapSnapshot() const {
+    // Serialize with backend pose updates so all fields in one snapshot refer
+    // to the same optimization state.  Disk and PCL work happens after this
+    // lock is released.
+    std::lock_guard<std::mutex> backend_lock(backend_mutex_);
+
+    std::vector<Keyframe::Ptr> accepted_keyframes;
+    {
+        std::lock_guard<std::mutex> lock(accepting_mutex_);
+        accepted_keyframes = accepted_keyframes_;
+    }
+
+    std::vector<KeyframeMapEntry> snapshot;
+    snapshot.reserve(accepted_keyframes.size());
+    for (const auto& keyframe : accepted_keyframes) {
+        if (!keyframe || !keyframe->GetCloud()) {
+            continue;
+        }
+
+        KeyframeMapEntry entry;
+        entry.id = keyframe->GetID();
+        entry.timestamp = keyframe->GetState().timestamp_;
+        entry.cloud = std::make_shared<const PointCloudType>(*keyframe->GetCloud());
+        entry.lio_pose = keyframe->GetLIOPose();
+        entry.optimized_pose = keyframe->GetOptPose();
+        snapshot.emplace_back(std::move(entry));
+    }
+    return snapshot;
 }
 
 void PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
-    if (!keyframe || keyframe == last_keyframe_ || !initialized_) {
-        return;
+    bool optimized = false;
+    std::size_t loop_count = 0;
+    OptimizedCallback optimized_callback;
+    DataCallback data_callback;
+    PoseGraphDataPtr data_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(backend_mutex_);
+        if (!keyframe || keyframe == last_keyframe_ || !initialized_) {
+            return;
+        }
+
+        keyframes_.Add(keyframe);
+
+        const auto constraints = options_.enable_loop_closing_
+                                     ? loop_closing_.ComputeConstraints(keyframe, keyframes_)
+                                     : std::vector<LoopCandidate>();
+        optimized = UpdateGraphAndOptimize(keyframe, constraints);
+        loop_count = loop_edges_.size();
+        last_keyframe_ = keyframe;
+        optimized_callback = optimized_callback_;
+        data_callback = data_callback_;
+        if (data_callback_) {
+            data_snapshot = CreateDataSnapshot(optimized);
+        }
     }
 
-    keyframes_.Add(keyframe);
-
-    const auto constraints = loop_closing_.ComputeConstraints(keyframe, keyframes_);
-    const bool optimized = UpdateGraphAndOptimize(keyframe, constraints);
-    if (optimized && optimized_callback_) {
-        optimized_callback_();
+    // Do not invoke external callbacks while the backend lock is held.  A
+    // visualization callback may synchronously request another snapshot.
+    if (optimized && optimized_callback) {
+        optimized_callback();
     }
     if (optimized) {
-        LOG(INFO) << "optimize finished, loops: " << loop_edges_.size();
+        LOG(INFO) << "optimize finished, loops: " << loop_count;
     }
 
-    if (data_callback_) {
-        data_callback_(CreateDataSnapshot(optimized));
+    if (data_callback) {
+        data_callback(std::move(data_snapshot));
     }
-
-    last_keyframe_ = keyframe;
 }
 
 PoseGraphDataPtr PoseGraph::CreateDataSnapshot(bool optimized) {
@@ -147,7 +248,10 @@ PoseGraphDataPtr PoseGraph::CreateDataSnapshot(bool optimized) {
 }
 
 void PoseGraph::Stop() {
-    accepting_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(accepting_mutex_);
+        accepting_.store(false);
+    }
     if (options_.online_mode_) {
         keyframe_thread_.Quit();
     }

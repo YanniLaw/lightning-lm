@@ -5,10 +5,12 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
-#include "core/lio/laser_mapping.h"
+#include "core/lio/lio_factory.h"
+#include "core/lio/lio_result_conversion.h"
 #include "core/loop_closing/pose_graph.h"
 #include "ros/sensor_bridge.h"
 #include "ui/pangolin_window.h"
+#include "utils/timer.h"
 #include "wrapper/bag_io.h"
 #include "wrapper/ros_utils.h"
 
@@ -33,56 +35,74 @@ int main(int argc, char** argv) {
 
     RosbagIO rosbag(FLAGS_input_bag);
 
-    LaserMapping lio;
-    if (!lio.Init(FLAGS_config)) {
-        LOG(ERROR) << "failed to init lio";
+    const YAML::Node config = YAML::LoadFile(FLAGS_config);
+    std::string lio_type = "aa_fasterlio";
+    if (config["system"] && config["system"]["lio_type"]) {
+        lio_type = config["system"]["lio_type"].as<std::string>();
+    }
+
+    auto lio = CreateLIO(lio_type);
+    if (!lio) {
+        LOG(ERROR) << "failed to create lio frontend";
         return -1;
-    };
+    }
+
+    LIOOptions lio_options;
+    lio_options.usage = LIOUsage::kMapping;
+    if (!lio->Init(FLAGS_config, lio_options)) {
+        LOG(ERROR) << "failed to init lio frontend";
+        return -1;
+    }
 
     auto ui = std::make_shared<ui::PangolinWindow>();
     ui->Init();
-    lio.SetNavStateCallback([ui](const NavState& state) { ui->UpdateNavState(state); });
-    lio.SetScanCallback([ui](const CloudPtr& cloud, const SE3& pose) { ui->UpdateScan(cloud, pose); });
-
-    YAML_IO yaml(FLAGS_config);
-    const auto lidar_type = static_cast<LidarType>(yaml.GetValue<int>("fasterlio", "lidar_type"));
-    const double velodyne_time_scale = yaml.GetValue<double>("fasterlio", "time_scale");
 
     PoseGraph::Options pose_graph_options;
     pose_graph_options.online_mode_ = false;
     auto pose_graph = std::make_shared<PoseGraph>(pose_graph_options);
     pose_graph->Init(FLAGS_config);
 
-    Keyframe::Ptr cur_kf = nullptr;
+    lio->SetPredictionCallback([ui](const LIOState& state) {
+        NavState nav_state;
+        if (ConvertToNavState(state, nav_state)) {
+            ui->UpdateNavState(nav_state);
+        }
+    });
+    lio->SetResultCallback([&pose_graph, ui](const LIOResult& result) {
+        if (result.display_cloud) {
+            auto cloud = std::make_shared<PointCloudType>(*result.display_cloud);
+            ui->UpdateScan(cloud, result.state.pose);
+        }
+        if (result.update_type == LIOUpdateType::kScanMatched && result.keyframe_selected) {
+            pose_graph->AddKeyframe(result);
+        }
+    });
+
+    YAML_IO yaml(FLAGS_config);
+    const auto lidar_type = static_cast<LidarType>(yaml.GetValue<int>("fasterlio", "lidar_type"));
+    const double velodyne_time_scale = yaml.GetValue<double>("fasterlio", "time_scale");
 
     rosbag
         .AddImuHandle("imu_raw",
                       [&lio](IMUPtr imu) {
-                          lio.ProcessIMU(imu);
+                          lio->AddImu(imu);
                           return true;
                       })
         .AddPointCloud2Handle("points_raw",
-                              [&lio, &cur_kf, &pose_graph, lidar_type, velodyne_time_scale](
+                              [&lio, lidar_type, velodyne_time_scale](
                                   sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
                                   TimedPointCloudData scan;
                                   if (!ros::ToTimedPointCloudData(*cloud, lidar_type, velodyne_time_scale, scan)) {
                                       return true;
                                   }
-                                  lio.ProcessPointCloud(scan);
-                                  lio.Run();
-
-                                  auto kf = lio.GetKeyframe();
-                                  if (cur_kf != kf) {
-                                      cur_kf = kf;
-                                      pose_graph->AddKeyframe(kf);
-                                  }
+                                  lio->AddPointCloud(scan);
 
                                   return true;
                               })
         .Go();
 
     pose_graph->Stop();
-    lio.SaveMap();
+    lio->Stop();
     Timer::PrintAll();
 
     ui->Quit();

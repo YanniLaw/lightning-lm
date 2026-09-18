@@ -45,7 +45,6 @@ class LocSystem {
 
     /// Process a transport-independent lidar scan.
     bool ProcessLidar(const TimedPointCloudData& cloud);
-    bool ProcessLidar(CloudPtr cloud);
 
     using ResultCallback = std::function<void(const loc::LocalizationResult&)>;
     using NavStateCallback = std::function<void(const NavState&)>;

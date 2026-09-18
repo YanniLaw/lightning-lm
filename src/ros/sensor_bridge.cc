@@ -22,6 +22,37 @@ bool IsFinite(const RawLidarPoint& point) {
            std::isfinite(point.intensity);
 }
 
+bool IsFinite(const geometry_msgs::msg::Vector3& vector) {
+    return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
+}
+
+bool IsFinite(const geometry_msgs::msg::Point& point) {
+    return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+}
+
+bool IsFinite(const geometry_msgs::msg::Quaternion& quaternion) {
+    return std::isfinite(quaternion.x) && std::isfinite(quaternion.y) && std::isfinite(quaternion.z) &&
+           std::isfinite(quaternion.w);
+}
+
+template <typename CovarianceArray>
+bool CopyCovariance(const CovarianceArray& source, Mat6d& destination) {
+    destination.setZero();
+    bool has_nonzero_value = false;
+    for (std::size_t row = 0; row < 6; ++row) {
+        for (std::size_t column = 0; column < 6; ++column) {
+            const double value = source[row * 6 + column];
+            if (!std::isfinite(value) || (row == column && value < 0.0)) {
+                destination.setZero();
+                return false;
+            }
+            destination(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(column)) = value;
+            has_nonzero_value = has_nonzero_value || value != 0.0;
+        }
+    }
+    return has_nonzero_value;
+}
+
 template <typename PointT, typename Converter>
 bool CopyPointCloud(const sensor_msgs::msg::PointCloud2& message, LidarType lidar_type,
                     TimedPointCloudData& output, Converter&& converter) {
@@ -182,6 +213,38 @@ bool ToTimedPointCloudData(const sensor_msgs::msg::PointCloud2& message, LidarTy
     }
 
     return false;
+}
+
+bool ToWheelOdometryData(const nav_msgs::msg::Odometry& message, WheelOdometryData& output) {
+    const std::int64_t timestamp_ns = ToNanoseconds(message.header.stamp);
+    if (timestamp_ns <= 0 || !IsFinite(message.pose.pose.position) ||
+        !IsFinite(message.pose.pose.orientation) || !IsFinite(message.twist.twist.linear) ||
+        !IsFinite(message.twist.twist.angular)) {
+        return false;
+    }
+
+    const Eigen::Quaterniond quaternion(message.pose.pose.orientation.w, message.pose.pose.orientation.x,
+                                        message.pose.pose.orientation.y, message.pose.pose.orientation.z);
+    if (!std::isfinite(quaternion.norm()) || quaternion.norm() <= std::numeric_limits<double>::epsilon()) {
+        return false;
+    }
+
+    output = WheelOdometryData();
+    output.timestamp_ns = timestamp_ns;
+    output.frame_id = message.header.frame_id;
+    output.child_frame_id = message.child_frame_id;
+    output.pose = SE3(quaternion.normalized(),
+                      Vec3d(message.pose.pose.position.x, message.pose.pose.position.y,
+                            message.pose.pose.position.z));
+    output.linear_velocity =
+        Vec3d(message.twist.twist.linear.x, message.twist.twist.linear.y, message.twist.twist.linear.z);
+    output.angular_velocity =
+        Vec3d(message.twist.twist.angular.x, message.twist.twist.angular.y, message.twist.twist.angular.z);
+    output.has_pose = true;
+    output.has_twist = true;
+    output.has_pose_covariance = CopyCovariance(message.pose.covariance, output.pose_covariance);
+    output.has_twist_covariance = CopyCovariance(message.twist.covariance, output.twist_covariance);
+    return true;
 }
 
 }  // namespace lightning::ros

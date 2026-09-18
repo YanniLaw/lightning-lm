@@ -1,11 +1,16 @@
 #pragma once
 
+#include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <utility>
 
 #include "common/imu.h"
 #include "common/sensor_data.h"
-#include "core/lio/laser_mapping.h"
+#include "core/lio/lio.h"
+#include "core/lio/lio_result.h"
 #include "core/localization/localization_result.h"
 #include "core/system/async_message_process.h"
 
@@ -52,7 +57,6 @@ class Localization {
 
     /// Process a transport-independent lidar scan.
     bool ProcessLidar(const TimedPointCloudData& scan);
-    bool ProcessLidar(CloudPtr scan);
 
     /// Process an internal IMU sample.
     void ProcessIMU(const IMUPtr& imu);
@@ -70,7 +74,6 @@ class Localization {
     void Finish();
 
     /// 异步处理函数
-    void LidarOdomProcCloud(CloudPtr);
     void LidarLocProcCloud(CloudPtr);
 
     using ResultCallback = std::function<void(const LocalizationResult& result)>;
@@ -96,16 +99,15 @@ class Localization {
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
    private:
+    void HandleLIOPrediction(const LIOState& state);
+    void HandleLIOResult(const LIOResult& result);
+
     /// 模块  ========================================================================================================
     std::mutex global_mutex_;  // 防止处理过程中被重复init
     Options options_;
 
-    /// 预处理
-    std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // point cloud preprocess
-
     /// 前端
-    std::shared_ptr<LaserMapping> lio_ = nullptr;
-    Keyframe::Ptr lio_kf_ = nullptr;
+    std::unique_ptr<LIO> lio_ = nullptr;
 
     // pose graph
     std::shared_ptr<PGO> pgo_ = nullptr;
@@ -114,8 +116,7 @@ class Localization {
     std::shared_ptr<LidarLoc> lidar_loc_;
 
     /// TODO async 处理
-    sys::AsyncMessageProcess<CloudPtr> lidar_odom_proc_cloud_;  // lidar odom 处理点云
-    sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;   // lidar loc 处理点云
+    sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;  // lidar loc 处理点云
 
     /// 结果数据 =====================================================================================================
     LocalizationResult loc_result_;

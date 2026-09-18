@@ -1,13 +1,13 @@
 #pragma once
 
+#include <memory>
+#include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <string>
 
 #include "lightning/srv/save_map.hpp"
-
-#include <memory>
-#include <string>
 
 #include "core/system/slam.h"
 #include "common/sensor_data.h"
@@ -31,6 +31,7 @@ class SlamNode final : public rclcpp::Node {
     void HandleImu(sensor_msgs::msg::Imu::ConstSharedPtr message);
     void HandlePointCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
     void HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr message);
+    void HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr message);
 
     std::string config_path_;
     LidarType lidar_type_ = LidarType::AVIA;
@@ -42,6 +43,7 @@ class SlamNode final : public rclcpp::Node {
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_subscription_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr wheel_odometry_subscription_;
     rclcpp::Service<srv::SaveMap>::SharedPtr save_map_service_;
 };
 

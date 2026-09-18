@@ -6,6 +6,7 @@
 #define LIGHTNING_SLAM_H
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -17,13 +18,14 @@
 #include "common/keyframe.h"
 #include "common/pose_graph_data.h"
 #include "common/sensor_data.h"
+#include "common/wheel_odometry_data.h"
+#include "core/lio/lio.h"
 #include "core/lio/lio_data.h"
+#include "core/lio/lio_result.h"
 #include "core/loop_closing/pose_graph.h"
 #include "core/system/sensor_dispatcher.h"
 
 namespace lightning {
-
-class LaserMapping;  //  lio 前端
 
 namespace g2p5 {
 class G2P5;
@@ -78,6 +80,9 @@ class SlamSystem {
     void SetGridMapCallback(std::function<void(GridMapDataPtr)> callback);
     void SetPoseGraphDataCallback(std::function<void(PoseGraphDataPtr)> callback);
 
+    /// Wheel data is accepted as an extension point and is not fused yet.
+    LIOInputStatus ProcessWheelOdometry(const WheelOdometryData& data);
+
     sys::SensorDispatcher::Stats GetInputStats() const;
 
     /// Stop processing.  Repeated calls are safe.
@@ -86,22 +91,22 @@ class SlamSystem {
    private:
     void ProcessIMUOnWorker(const IMUPtr& imu);
     bool ProcessLidarOnWorker(const TimedPointCloudData& cloud);
-    bool RunPendingLidar();
+    void HandleLIOPrediction(const LIOState& state);
+    void HandleLIOResult(const LIOResult& result);
 
     Options options_;
     std::atomic_bool running_ = false;
 
     std::string map_name_;  // 地图名
 
-    std::shared_ptr<LaserMapping> lio_ = nullptr;       // lio 前端
+    std::unique_ptr<LIO> lio_ = nullptr;                // LIO frontend
     std::shared_ptr<PoseGraph> pose_graph_ = nullptr;  // 后端关键帧、回环与图优化
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        // 栅格地图
 
-    Keyframe::Ptr cur_kf_ = nullptr;
     std::function<void(const LIOData&)> lio_data_callback_;
-    std::function<void(const NavState&)> nav_state_callback_;
-    std::function<void(const CloudPtr&, const SE3&)> scan_callback_;
-    std::function<void(const Keyframe::Ptr&)> keyframe_callback_;
+    std::function<void(const NavState&)> nav_state_callback_;           // UI
+    std::function<void(const CloudPtr&, const SE3&)> scan_callback_;    // UI
+    std::function<void(const Keyframe::Ptr&)> keyframe_callback_;       // UI
     std::function<void(GridMapDataPtr)> grid_map_callback_;
     std::function<void(PoseGraphDataPtr)> pose_graph_data_callback_;
     std::unique_ptr<sys::SensorDispatcher> sensor_dispatcher_;

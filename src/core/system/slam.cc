@@ -4,7 +4,9 @@
 
 #include "core/system/slam.h"
 #include "core/g2p5/g2p5.h"
-#include "core/lio/laser_mapping.h"
+#include "core/lio/lio_factory.h"
+#include "core/lio/lio_result_conversion.h"
+#include "core/maps/keyframe_map.h"
 #include "core/maps/tiled_map.h"
 
 #include <yaml-cpp/yaml.h>
@@ -24,16 +26,30 @@ SlamSystem::SlamSystem(lightning::SlamSystem::Options options) : options_(option
 }
 
 bool SlamSystem::Init(const std::string& yaml_path) {
-    lio_ = std::make_shared<LaserMapping>();
-    if (!lio_->Init(yaml_path)) {
-        LOG(ERROR) << "failed to init lio module";
-        return false;
-    }
-    if (lio_data_callback_) {
-        lio_->SetLIODataCallback(lio_data_callback_);
+    auto yaml = YAML::LoadFile(yaml_path);
+    std::string lio_type = "aa_fasterlio";
+    if (yaml["system"] && yaml["system"]["lio_type"]) {
+        lio_type = yaml["system"]["lio_type"].as<std::string>();
     }
 
-    auto yaml = YAML::LoadFile(yaml_path);
+    lio_ = CreateLIO(lio_type);
+    if (!lio_) {
+        LOG(ERROR) << "failed to create LIO frontend: " << lio_type;
+        return false;
+    }
+
+    lio_->SetResultCallback([this](const LIOResult& result) { HandleLIOResult(result); });
+    lio_->SetPredictionCallback([this](const LIOState& state) { HandleLIOPrediction(state); });
+    lio_->SetDataCallback(lio_data_callback_);
+
+    LIOOptions lio_options;
+    lio_options.usage = LIOUsage::kMapping;
+    if (!lio_->Init(yaml_path, lio_options)) {
+        LOG(ERROR) << "failed to init lio module";
+        lio_.reset();
+        return false;
+    }
+
     options_.with_loop_closing_ = yaml["system"]["with_loop_closing"].as<bool>();
     options_.with_visualization_ = yaml["system"]["with_ui"].as<bool>();
     options_.with_2dvisualization_ = yaml["system"]["with_2dui"].as<bool>();
@@ -47,22 +63,14 @@ bool SlamSystem::Init(const std::string& yaml_path) {
                                              ? yaml["system"]["rviz_local_map_max_scans"].as<std::size_t>()
                                              : 200;
 
-    if (options_.with_loop_closing_) {
-        LOG(INFO) << "slam with loop closing";
-        PoseGraph::Options pose_graph_options;
-        pose_graph_options.online_mode_ = options_.online_mode_;
-        pose_graph_ = std::make_shared<PoseGraph>(pose_graph_options);
-        pose_graph_->Init(yaml_path);
-        if (pose_graph_data_callback_) {
-            pose_graph_->SetDataCallback(pose_graph_data_callback_);
-        }
-    }
-
-    if (nav_state_callback_) {
-        lio_->SetNavStateCallback(nav_state_callback_);
-    }
-    if (scan_callback_) {
-        lio_->SetScanCallback(scan_callback_);
+    LOG(INFO) << "slam with loop closing: " << std::boolalpha << options_.with_loop_closing_;
+    PoseGraph::Options pose_graph_options;
+    pose_graph_options.online_mode_ = options_.online_mode_;
+    pose_graph_options.enable_loop_closing_ = options_.with_loop_closing_;
+    pose_graph_ = std::make_shared<PoseGraph>(pose_graph_options);
+    pose_graph_->Init(yaml_path);
+    if (pose_graph_data_callback_) {
+        pose_graph_->SetDataCallback(pose_graph_data_callback_);
     }
 
     if (options_.with_gridmap_) {
@@ -114,18 +122,29 @@ void SlamSystem::SaveMap(const std::string& path) {
         std::filesystem::create_directories(save_path);
     }
 
-    // auto global_map_no_loop = lio_->GetGlobalMap(true);
-    auto global_map = lio_->GetGlobalMap(!options_.with_loop_closing_);
-    // auto global_map_raw = lio_->GetGlobalMap(!options_.with_loop_closing_, false, 0.1);
+    if (!pose_graph_) {
+        LOG(ERROR) << "pose graph is not initialized, cannot save map";
+        return;
+    }
+
+    const auto keyframes = pose_graph_->GetMapSnapshot();
+    if (keyframes.empty()) {
+        LOG(WARNING) << "no keyframes available, map was not saved";
+        return;
+    }
+
+    auto global_map = BuildKeyframeMap(keyframes, !options_.with_loop_closing_);
 
     TiledMap::Options tm_options;
     tm_options.map_path_ = save_path;
 
     TiledMap tm(tm_options);
-    SE3 start_pose = lio_->GetAllKeyframes().front()->GetOptPose();
+    const SE3 start_pose = options_.with_loop_closing_ ? keyframes.front().optimized_pose
+                                                       : keyframes.front().lio_pose;
     tm.ConvertFromFullPCD(global_map, start_pose, save_path);
 
     pcl::io::savePCDFileBinaryCompressed(save_path + "/global.pcd", *global_map);
+    LOG(INFO) << "Saved global map to " << save_path + "/global.pcd";
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_no_loop.pcd", *global_map_no_loop);
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
@@ -227,63 +246,79 @@ void SlamSystem::ProcessIMUOnWorker(const IMUPtr& imu) {
     if (!lio_ || !imu) {
         return;
     }
-    lio_->ProcessIMU(imu);
-    if (lio_->HasPendingLidar()) {
-        RunPendingLidar();
-    }
+    lio_->AddImu(imu);
 }
 
 bool SlamSystem::ProcessLidarOnWorker(const TimedPointCloudData& cloud) {
-    if (!lio_ || !lio_->ProcessPointCloud(cloud)) {
+    if (!lio_) {
         return false;
     }
-    return RunPendingLidar();
+    const LIOInputStatus result = lio_->AddPointCloud(cloud);
+    return result == LIOInputStatus::kAccepted;
 }
 
-bool SlamSystem::RunPendingLidar() {
-    if (!lio_ || !lio_->Run()) {
-        return false;
+void SlamSystem::HandleLIOPrediction(const LIOState& state) {
+    NavState nav_state;
+    if (!ConvertToNavState(state, nav_state)) {
+        return;
+    }
+    if (nav_state_callback_) {
+        nav_state_callback_(nav_state);
+    }
+}
+
+void SlamSystem::HandleLIOResult(const LIOResult& result) {
+    if (!result.state.pose_is_valid || !result.state.pose.matrix().allFinite()) {
+        return;
     }
 
-    auto kf = lio_->GetKeyframe();
-    if (kf == cur_kf_ || !kf) {
-        return true;
+    if (scan_callback_ && result.display_cloud) {
+        auto display_cloud = std::make_shared<PointCloudType>(*result.display_cloud);
+        scan_callback_(std::move(display_cloud), result.state.pose);
     }
-    cur_kf_ = kf;
 
-    if (options_.with_loop_closing_ && pose_graph_) {
-        pose_graph_->AddKeyframe(cur_kf_);
+    if (result.update_type != LIOUpdateType::kScanMatched || !result.keyframe_selected || !pose_graph_) {
+        return;
+    }
+
+    auto keyframe = pose_graph_->AddKeyframe(result);
+    if (!keyframe) {
+        LOG(WARNING) << "LIO keyframe result was rejected by pose graph";
+        return;
     }
 
     if (options_.with_gridmap_ && g2p5_) {
-        g2p5_->PushKeyframe(cur_kf_);
+        g2p5_->PushKeyframe(keyframe);
     }
-
     if (keyframe_callback_) {
-        keyframe_callback_(cur_kf_);
+        keyframe_callback_(keyframe);
     }
-    return true;
+}
+
+LIOInputStatus SlamSystem::ProcessWheelOdometry(const WheelOdometryData& data) {
+    if (!running_ || !lio_) {
+        return LIOInputStatus::kNotRunning;
+    }
+    const LIOInputStatus lio_status = lio_->AddWheelOdometry(data);
+    if (pose_graph_) {
+        pose_graph_->AddWheelOdometry(data);
+    }
+    return lio_status;
 }
 
 void SlamSystem::SetLIODataCallback(std::function<void(const LIOData&)> callback) {
     lio_data_callback_ = std::move(callback);
     if (lio_) {
-        lio_->SetLIODataCallback(lio_data_callback_);
+        lio_->SetDataCallback(lio_data_callback_);
     }
 }
 
 void SlamSystem::SetNavStateCallback(std::function<void(const NavState&)> callback) {
     nav_state_callback_ = std::move(callback);
-    if (lio_) {
-        lio_->SetNavStateCallback(nav_state_callback_);
-    }
 }
 
 void SlamSystem::SetScanCallback(std::function<void(const CloudPtr&, const SE3&)> callback) {
     scan_callback_ = std::move(callback);
-    if (lio_) {
-        lio_->SetScanCallback(scan_callback_);
-    }
 }
 
 void SlamSystem::SetKeyframeCallback(std::function<void(const Keyframe::Ptr&)> callback) {
@@ -311,6 +346,9 @@ void SlamSystem::Stop() {
     }
     if (pose_graph_) {
         pose_graph_->Stop();
+    }
+    if (lio_) {
+        lio_->Stop();
     }
     running_ = false;
     if (g2p5_) {

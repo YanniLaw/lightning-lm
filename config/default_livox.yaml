@@ -4,6 +4,30 @@ common:
   lidar_topic: "points_raw"
   livox_lidar_topic: "/livox/lidar"
   imu_topic: "/livox/imu"
+  enable_wheel_odom: true
+  wheel_odom_topic: "/odom"
+
+system:
+  with_rviz: true # 是否发布的RViz可视化话题
+  rviz_local_map_publish_hz: 2.0 # RViz累积局部地图发布频率，<=0表示每帧发布
+  rviz_local_map_max_scans: 200 # RViz累积局部地图最多保留的扫描帧数
+  rviz_path_publish_hz: 10.0 # RViz轨迹发布频率
+  with_loop_closing: true # 是否需要回环检测
+  with_ui: true # 是否需要3D UI
+  with_2dui: false # 是否需要2D UI
+  with_g2p5: true # 是否需要栅格地图
+  step_on_kf: false # 是否在关键帧处暂停
+
+  lio_type: "aa_fasterlio"
+
+  enable_lidar_loc_skip: false
+  enable_lidar_loc_rviz: false
+  enable_lidar_odom_skip: false
+  evaluation: false
+  lidar_loc_skip_num: 4
+  lidar_odom_skip_num: 2
+  map_path: ./data/new_map/
+  pub_tf: true
 
 # fasterlio 参数
 fasterlio:
@@ -51,26 +75,6 @@ g2p5:
   min_th_floor: 0.50  # 距离地面这个高度的障碍物被扫入栅格地图中
   max_th_floor: 1.0  # 距离地面这个高度的障碍物被扫入栅格地图中
   grid_map_resolution: 0.2 # 栅格地图分辨率
-
-system:
-  with_rviz: true # 是否发布的RViz可视化话题
-  rviz_local_map_publish_hz: 2.0 # RViz累积局部地图发布频率，<=0表示每帧发布
-  rviz_local_map_max_scans: 200 # RViz累积局部地图最多保留的扫描帧数
-  rviz_path_publish_hz: 10.0 # RViz轨迹发布频率
-  with_loop_closing: true # 是否需要回环检测
-  with_ui: true # 是否需要3D UI
-  with_2dui: false # 是否需要2D UI
-  with_g2p5: true # 是否需要栅格地图
-  step_on_kf: false # 是否在关键帧处暂停
-
-  enable_lidar_loc_skip: false
-  enable_lidar_loc_rviz: false
-  enable_lidar_odom_skip: false
-  evaluation: false
-  lidar_loc_skip_num: 4
-  lidar_odom_skip_num: 2
-  map_path: ./data/new_map/
-  pub_tf: true
 
 loop_closing:
   loop_kf_gap: 20       # 每隔多少个关键帧检查一次

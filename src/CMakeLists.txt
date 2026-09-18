@@ -29,9 +29,13 @@ add_library(core SHARED
         io/yaml_io.cc
         io/file_io.cc
 
-        core/lio/eskf.cc
-        core/lio/laser_mapping.cc
-        core/lio/pointcloud_preprocess.cc
+        core/lio/lio_result_conversion.cc
+        core/lio/lio_factory.cc
+        core/lio/keyframe_selector.cc
+        core/lio/scan_accumulator.cc
+        core/lio/aa-fasterlio/eskf.cc
+        core/lio/aa-fasterlio/laser_mapping.cc
+        core/lio/aa-fasterlio/pointcloud_preprocess.cc
         core/loop_closing/keyframe_collection.cc
         core/loop_closing/loop_closing.cc
         core/loop_closing/pose_graph.cc
@@ -42,6 +46,7 @@ add_library(core SHARED
 
         core/maps/tiled_map.cc
         core/maps/tiled_map_chunk.cc
+        core/maps/keyframe_map.cc
 
         core/localization/localization_result.cc
         core/localization/lidar_loc/lidar_loc.cc

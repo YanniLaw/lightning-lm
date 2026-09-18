@@ -1,10 +1,12 @@
 #pragma once
 
+#include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "common/imu.h"
 #include "common/sensor_data.h"
+#include "common/wheel_odometry_data.h"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
 
 namespace lightning::ros {
@@ -20,5 +22,9 @@ bool ToTimedPointCloudData(const livox_ros_driver2::msg::CustomMsg& message,
 /// per message time unit and is applied exactly once at this boundary.
 bool ToTimedPointCloudData(const sensor_msgs::msg::PointCloud2& message, LidarType lidar_type,
                            double velodyne_time_scale, TimedPointCloudData& output);
+
+/// Convert a wheel-encoder odometry message without applying frame transforms
+/// or feeding it into an estimator.
+bool ToWheelOdometryData(const nav_msgs::msg::Odometry& message, WheelOdometryData& output);
 
 }  // namespace lightning::ros

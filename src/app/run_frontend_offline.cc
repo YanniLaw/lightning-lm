@@ -6,9 +6,12 @@
 #include <glog/logging.h>
 
 #include "core/g2p5/g2p5.h"
-#include "core/lio/laser_mapping.h"
+#include "core/lio/lio_factory.h"
+#include "core/lio/lio_result_conversion.h"
+#include "core/loop_closing/pose_graph.h"
 #include "ros/sensor_bridge.h"
 #include "ui/pangolin_window.h"
+#include "utils/timer.h"
 #include "wrapper/bag_io.h"
 
 #include "io/yaml_io.h"
@@ -36,11 +39,24 @@ int main(int argc, char** argv) {
 
     RosbagIO rosbag(FLAGS_input_bag);
 
-    LaserMapping lio;
-    if (!lio.Init(FLAGS_config)) {
-        LOG(ERROR) << "failed to init lio";
+    const YAML::Node config = YAML::LoadFile(FLAGS_config);
+    std::string lio_type = "aa_fasterlio";
+    if (config["system"] && config["system"]["lio_type"]) {
+        lio_type = config["system"]["lio_type"].as<std::string>();
+    }
+
+    auto lio = CreateLIO(lio_type);
+    if (!lio) {
+        LOG(ERROR) << "failed to create lio frontend";
         return -1;
-    };
+    }
+
+    LIOOptions lio_options;
+    lio_options.usage = LIOUsage::kMapping;
+    if (!lio->Init(FLAGS_config, lio_options)) {
+        LOG(ERROR) << "failed to init lio frontend";
+        return -1;
+    }
 
     g2p5::G2P5::Options map_opt;
     map_opt.online_mode_ = false;
@@ -50,19 +66,43 @@ int main(int argc, char** argv) {
 
     auto ui = std::make_shared<ui::PangolinWindow>();
     ui->Init();
-    lio.SetNavStateCallback([ui](const NavState& state) { ui->UpdateNavState(state); });
-    lio.SetScanCallback([ui](const CloudPtr& cloud, const SE3& pose) { ui->UpdateScan(cloud, pose); });
+
+    PoseGraph::Options pose_graph_options;
+    pose_graph_options.online_mode_ = false;
+    pose_graph_options.enable_loop_closing_ = false;
+    auto pose_graph = std::make_shared<PoseGraph>(pose_graph_options);
+    pose_graph->Init(FLAGS_config);
+
+    lio->SetPredictionCallback([ui](const LIOState& state) {
+        NavState nav_state;
+        if (ConvertToNavState(state, nav_state)) {
+            ui->UpdateNavState(nav_state);
+        }
+    });
+    lio->SetResultCallback([&map, &pose_graph, ui](const LIOResult& result) {
+        if (result.display_cloud) {
+            auto cloud = std::make_shared<PointCloudType>(*result.display_cloud);
+            ui->UpdateScan(cloud, result.state.pose);
+        }
+
+        if (result.update_type != LIOUpdateType::kScanMatched || !result.keyframe_selected) {
+            return;
+        }
+
+        auto keyframe = pose_graph->AddKeyframe(result);
+        if (keyframe) {
+            map.PushKeyframe(keyframe);
+        }
+    });
 
     YAML_IO yaml(FLAGS_config);
     const auto lidar_type = static_cast<LidarType>(yaml.GetValue<int>("fasterlio", "lidar_type"));
     const double velodyne_time_scale = yaml.GetValue<double>("fasterlio", "time_scale");
 
-    Keyframe::Ptr cur_kf = nullptr;
-
     rosbag
         .AddImuHandle("imu_raw",
                       [&lio](IMUPtr imu) {
-                          lio.ProcessIMU(imu);
+                          lio->AddImu(imu);
                           return true;
                       })
         .AddPointCloud2Handle("points_raw",
@@ -71,32 +111,24 @@ int main(int argc, char** argv) {
                                   if (!ros::ToTimedPointCloudData(*cloud, lidar_type, velodyne_time_scale, scan)) {
                                       return true;
                                   }
-                                  lio.ProcessPointCloud(scan);
-                                  lio.Run();
+                                  lio->AddPointCloud(scan);
 
-                                  auto kf = lio.GetKeyframe();
-                                  if (cur_kf != kf) {
-                                      cur_kf = kf;
-
-                                      // pcl::io::savePCDFile("./data/" + std::to_string(cur_kf->GetID()) + ".pcd",
-                                      //                      *cur_kf->GetCloud());
-
-                                      map.PushKeyframe(cur_kf);
-
-                                      if (FLAGS_show_grid_map) {
-                                          cv::Mat image = map.GetNewestMap()->ToCV();
-                                          cv::imshow("map", image);
-                                          cv::waitKey(10);
-                                      }
+                                  if (FLAGS_show_grid_map && map.GetNewestMap()) {
+                                      cv::Mat image = map.GetNewestMap()->ToCV();
+                                      cv::imshow("map", image);
+                                      cv::waitKey(10);
                                   }
 
                                   return true;
                               })
         .Go();
 
-    lio.SaveMap();
-    cv::Mat image = map.GetNewestMap()->ToCV();
-    cv::imwrite("./data/map.png", image);
+    pose_graph->Stop();
+    lio->Stop();
+    if (map.GetNewestMap()) {
+        cv::Mat image = map.GetNewestMap()->ToCV();
+        cv::imwrite("./data/map.png", image);
+    }
 
     Timer::PrintAll();
 
