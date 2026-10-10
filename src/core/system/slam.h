@@ -22,7 +22,7 @@
 #include "core/lio/lio.h"
 #include "core/lio/lio_data.h"
 #include "core/lio/lio_result.h"
-#include "core/loop_closing/pose_graph.h"
+#include "core/pose_graph/pose_graph.h"
 #include "core/system/sensor_dispatcher.h"
 
 namespace lightning {
@@ -103,12 +103,12 @@ class SlamSystem {
     std::shared_ptr<PoseGraph> pose_graph_ = nullptr;  // 后端关键帧、回环与图优化
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        // 栅格地图
 
-    std::function<void(const LIOData&)> lio_data_callback_;
+    std::function<void(const LIOData&)> lio_data_callback_;             // RVIZ
     std::function<void(const NavState&)> nav_state_callback_;           // UI
     std::function<void(const CloudPtr&, const SE3&)> scan_callback_;    // UI
     std::function<void(const Keyframe::Ptr&)> keyframe_callback_;       // UI
-    std::function<void(GridMapDataPtr)> grid_map_callback_;
-    std::function<void(PoseGraphDataPtr)> pose_graph_data_callback_;
+    std::function<void(GridMapDataPtr)> grid_map_callback_;             // RVIZ
+    std::function<void(PoseGraphDataPtr)> pose_graph_data_callback_;    // RVIZ
     std::unique_ptr<sys::SensorDispatcher> sensor_dispatcher_;
 };
 }  // namespace lightning

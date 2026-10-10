@@ -65,10 +65,12 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 
     LOG(INFO) << "slam with loop closing: " << std::boolalpha << options_.with_loop_closing_;
     PoseGraph::Options pose_graph_options;
-    pose_graph_options.online_mode_ = options_.online_mode_;
     pose_graph_options.enable_loop_closing_ = options_.with_loop_closing_;
     pose_graph_ = std::make_shared<PoseGraph>(pose_graph_options);
-    pose_graph_->Init(yaml_path);
+    if (!pose_graph_->Init(yaml_path)) {
+        LOG(ERROR) << "Failed to initialize pose graph";
+        return false;
+    }
     if (pose_graph_data_callback_) {
         pose_graph_->SetDataCallback(pose_graph_data_callback_);
     }
@@ -127,7 +129,11 @@ void SlamSystem::SaveMap(const std::string& path) {
         return;
     }
 
-    const auto keyframes = pose_graph_->GetMapSnapshot();
+    std::vector<KeyframeMapEntry> keyframes;
+    if (!pose_graph_->FlushAndGetMapSnapshot(&keyframes)) {
+        LOG(ERROR) << "pose graph flush failed; map was not saved";
+        return;
+    }
     if (keyframes.empty()) {
         LOG(WARNING) << "no keyframes available, map was not saved";
         return;

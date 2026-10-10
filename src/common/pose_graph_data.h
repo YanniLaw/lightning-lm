@@ -22,6 +22,7 @@ struct PoseGraphNode {
 
 /// A loop-closure edge exposed to visualization consumers.
 struct PoseGraphConstraint {
+    std::uint64_t id = 0;
     unsigned long from_id = 0;
     unsigned long to_id = 0;
     bool is_outlier = false;

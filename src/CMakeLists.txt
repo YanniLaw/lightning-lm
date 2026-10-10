@@ -36,9 +36,11 @@ add_library(core SHARED
         core/lio/aa-fasterlio/eskf.cc
         core/lio/aa-fasterlio/laser_mapping.cc
         core/lio/aa-fasterlio/pointcloud_preprocess.cc
-        core/loop_closing/keyframe_collection.cc
+        core/pose_graph/keyframe_collection.cc
         core/loop_closing/loop_closing.cc
-        core/loop_closing/pose_graph.cc
+        core/optimization/miao_optimizer.cc
+        core/optimization/optimizer_factory.cc
+        core/pose_graph/pose_graph.cc
 
         core/g2p5/g2p5_map.cc
         core/g2p5/g2p5.cc
@@ -60,6 +62,8 @@ add_library(core SHARED
 
         utils/timer.cc
         utils/pointcloud_utils.cc
+        utils/task.cc
+        utils/thread_pool.cc
 
         core/system/slam.cc
         core/system/loc_system.cc

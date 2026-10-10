@@ -2,8 +2,8 @@
 //
 // Keyframe collection and lookup utilities.
 
-#ifndef LIGHTNING_KEYFRAME_COLLECTION_H
-#define LIGHTNING_KEYFRAME_COLLECTION_H
+#ifndef SRC_CORE_POSE_GRAPH_KEYFRAME_COLLECTION_H_
+#define SRC_CORE_POSE_GRAPH_KEYFRAME_COLLECTION_H_
 
 #include <cstddef>
 #include <unordered_map>
@@ -32,4 +32,4 @@ class KeyframeCollection {
 
 }  // namespace lightning
 
-#endif  // LIGHTNING_KEYFRAME_COLLECTION_H
+#endif  // SRC_CORE_POSE_GRAPH_KEYFRAME_COLLECTION_H_

@@ -77,7 +77,10 @@ g2p5:
   grid_map_resolution: 0.2 # 栅格地图分辨率
 
 loop_closing:
-  loop_kf_gap: 20       # 每隔多少个关键帧检查一次
+  loop_kf_gap: 20       # 兼容旧配置；检测间隔请使用 detection_interval
+  detection_interval: 20
+  optimize_every_n_nodes: 20
+  num_threads: 2
   min_id_interval: 20   # 被检查的关键帧ID间隔
   closest_id_th: 50     # 历史关键帧与当前帧的ID间隔
   max_range: 20.0       # 候选帧的最大距离

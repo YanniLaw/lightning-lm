@@ -59,6 +59,9 @@ system:
   with_g2p5: false # 是否需要栅格地图
   step_on_kf: false # 是否在关键帧处暂停
 
+  lio_type: "aa_fasterlio"
+  optimizer_type: "miao"
+
   enable_lidar_loc_skip: false
   enable_lidar_loc_rviz: false
   enable_lidar_odom_skip: false
@@ -68,7 +71,10 @@ system:
   pub_tf: true
 
 loop_closing:
-  loop_kf_gap: 50       # 每隔多少个关键帧检查一次
+  loop_kf_gap: 50       # 兼容旧配置；检测间隔请使用 detection_interval
+  detection_interval: 50
+  optimize_every_n_nodes: 20
+  num_threads: 2
   min_id_interval: 20   # 被检查的关键帧ID间隔
   closest_id_th: 50     # 历史关键帧与当前帧的ID间隔
   max_range: 30.0       # 候选帧的最大距离

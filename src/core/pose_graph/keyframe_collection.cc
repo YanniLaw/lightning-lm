@@ -2,7 +2,7 @@
 //
 // Keyframe collection and lookup utilities.
 
-#include "core/loop_closing/keyframe_collection.h"
+#include "core/pose_graph/keyframe_collection.h"
 
 namespace lightning {
 

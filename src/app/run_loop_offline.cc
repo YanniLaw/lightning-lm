@@ -7,7 +7,7 @@
 
 #include "core/lio/lio_factory.h"
 #include "core/lio/lio_result_conversion.h"
-#include "core/loop_closing/pose_graph.h"
+#include "core/pose_graph/pose_graph.h"
 #include "ros/sensor_bridge.h"
 #include "ui/pangolin_window.h"
 #include "utils/timer.h"
@@ -58,9 +58,10 @@ int main(int argc, char** argv) {
     ui->Init();
 
     PoseGraph::Options pose_graph_options;
-    pose_graph_options.online_mode_ = false;
     auto pose_graph = std::make_shared<PoseGraph>(pose_graph_options);
-    pose_graph->Init(FLAGS_config);
+    if (!pose_graph->Init(FLAGS_config)) {
+        return 1;
+    }
 
     lio->SetPredictionCallback([ui](const LIOState& state) {
         NavState nav_state;
