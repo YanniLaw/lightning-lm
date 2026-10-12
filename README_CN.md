@@ -184,7 +184,8 @@ Ubuntu 20.04 应该也可行，未测试。
 
 imu和雷达外参默认为零就好，我们对这个不敏感。
 
-时间戳相关的fasterlio.time_scale是敏感的。您最好关注一下雷达点云是否带有每个点的时间戳，以及它们是否计算正确。这些代码在core/lio/pointcloud_preprocess里.
+时间戳相关的fasterlio.time_scale是敏感的。您最好关注一下雷达点云是否带有每个点的时间戳，以及它们是否计算正确。这些代码在
+`src/core/lio/aa-fasterlio/pointcloud_preprocess`里。
 
 其他参数调整参考下一节。
 

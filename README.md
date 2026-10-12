@@ -207,7 +207,8 @@ You usually need to modify `common.lidar_topic` and `common.imu_topic` to set th
 The IMU and LiDAR extrinsic parameters can default to zero; we are not sensitive to them.
 
 The `fasterlio.time_scale` related to timestamps is sensitive. You should pay attention to whether the LiDAR point cloud
-has timestamps for each point and if they are calculated correctly. This code is in `core/lio/pointcloud_preprocess`.
+has timestamps for each point and if they are calculated correctly. This code is in
+`src/core/lio/aa-fasterlio/pointcloud_preprocess`.
 
 Refer to the next section for other parameter adjustments.
 
@@ -275,4 +276,3 @@ items include:
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=gaoxiang12/lightning-lm&type=date&legend=top-left)](https://www.star-history.com/#gaoxiang12/lightning-lm&type=date&legend=top-left)
-

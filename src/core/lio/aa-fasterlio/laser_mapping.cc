@@ -1,15 +1,71 @@
-#include <pcl/common/transforms.h>
-#include <pcl/io/pcd_io.h>
+#include "core/lio/aa-fasterlio/laser_mapping.h"
+
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+
 #include <yaml-cpp/yaml.h>
-#include <fstream>
 
 #include "common/options.h"
 #include "core/lightning_math.hpp"
-#include "laser_mapping.h"
 
 namespace lightning {
 
-bool LaserMapping::Init(const std::string &config_yaml) {
+namespace {
+
+LIOState ToLIOState(const NavState& state) {
+    LIOState result;
+    result.timestamp = state.timestamp_;
+    result.pose = state.GetPose();
+    result.velocity = state.vel_;
+    result.gyro_bias = state.bg_;
+    result.gravity = state.grav_;
+    result.pose_is_valid = state.pose_is_ok_;
+    result.lidar_odom_reliable = state.lidar_odom_reliable_;
+    return result;
+}
+
+CloudPtr CopyCloud(const CloudPtr& cloud) {
+    if (!cloud) {
+        return nullptr;
+    }
+    return std::make_shared<PointCloudType>(*cloud);
+}
+
+bool IsFinite(const IMUPtr& imu) {
+    return imu && std::isfinite(imu->timestamp) && imu->timestamp >= 0.0 &&
+           imu->angular_velocity.allFinite() && imu->linear_acceleration.allFinite();
+}
+
+bool IsFinite(const TimedPointCloudData& scan) {
+    if (scan.timestamp_ns <= 0 || scan.points.empty()) {
+        return false;
+    }
+    for (const RawLidarPoint& point : scan.points) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
+            !std::isfinite(point.intensity)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+LaserMapping::~LaserMapping() {
+    Stop();
+    scan_down_body_ = nullptr;
+    scan_undistort_ = nullptr;
+    scan_down_world_ = nullptr;
+    LOG(INFO) << "laser mapping deconstruct";
+}
+
+bool LaserMapping::Init(const std::string& config_yaml, const LIOOptions& options) {
+    options_.is_in_slam_mode_ = options.usage == LIOUsage::kMapping;
+    return Init(config_yaml);
+}
+
+bool LaserMapping::Init(const std::string& config_yaml) {
     LOG(INFO) << "init laser mapping from " << config_yaml;
     if (!LoadParamsFromYAML(config_yaml)) {
         return false;
@@ -25,6 +81,8 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     eskf_options.lidar_obs_func_ = [this](NavState &s, ESKF::CustomObservationModel &obs) { ObsModel(s, obs); };
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
+
+    running_.store(true);
 
     return true;
 }
@@ -77,6 +135,16 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         bool use_imu_filter = yaml["fasterlio"]["imu_filter"].as<bool>();
         p_imu_->SetUseIMUFilter(use_imu_filter);
         options_.proj_kfs_ = yaml["fasterlio"]["proj_kfs"].as<bool>();
+
+        KeyframeSelector::Options selector_options;
+        selector_options.translation_threshold = options_.kf_dis_th_;
+        selector_options.rotation_threshold = options_.kf_angle_th_;
+        selector_options.localization_mode = !options_.is_in_slam_mode_;
+        keyframe_selector_.SetOptions(selector_options);
+
+        ScanAccumulator::Options accumulator_options;
+        accumulator_options.max_scans = static_cast<std::size_t>(options_.max_proj_kfs_);
+        scan_accumulator_.SetOptions(accumulator_options);
 
     } catch (...) {
         LOG(ERROR) << "bad conversion";
@@ -132,7 +200,60 @@ LaserMapping::LaserMapping(Options options) : options_(options) {
     p_imu_.reset(new ImuProcess());
 }
 
-void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
+LIOInputStatus LaserMapping::AddImu(const IMUPtr& imu) {
+    if (!running_.load()) {
+        return LIOInputStatus::kNotRunning;
+    }
+    if (!IsFinite(imu)) {
+        return LIOInputStatus::kInvalidData;
+    }
+    if (last_timestamp_imu_ >= 0.0 && imu->timestamp < last_timestamp_imu_) {
+        return LIOInputStatus::kTimeDiscontinuity;
+    }
+
+    ProcessIMU(imu);
+    if (HasPendingLidar()) {
+        Run();
+    }
+    return LIOInputStatus::kAccepted;
+}
+
+LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloudData& scan) {
+    if (!running_.load()) {
+        return LIOInputStatus::kNotRunning;
+    }
+    if (!IsFinite(scan)) {
+        return LIOInputStatus::kInvalidData;
+    }
+
+    const double timestamp = static_cast<double>(scan.timestamp_ns) * 1e-9;
+    if (timestamp < last_timestamp_lidar_) {
+        return LIOInputStatus::kTimeDiscontinuity;
+    }
+    if (!ProcessPointCloud(scan)) {
+        return LIOInputStatus::kInvalidData;
+    }
+
+    Run();
+    return LIOInputStatus::kAccepted;
+}
+
+LIOInputStatus LaserMapping::AddWheelOdometry(const WheelOdometryData& data) {
+    if (!running_.load()) {
+        return LIOInputStatus::kNotRunning;
+    }
+    if (data.timestamp_ns <= 0) {
+        return LIOInputStatus::kInvalidData;
+    }
+    LOG_EVERY_N(INFO, 100) << "wheel odometry input is received but not fused by aa_fasterlio";
+    return LIOInputStatus::kUnsupported;
+}
+
+void LaserMapping::Stop() {
+    running_.store(false);
+}
+
+void LaserMapping::ProcessIMU(const IMUPtr& imu) {
     if (!imu) {
         return;
     }
@@ -166,8 +287,14 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
         imu_buffer_.emplace_back(imu);
     }
 
-    if (should_notify && nav_state_callback_) {
-        nav_state_callback_(nav_state);
+    if (should_notify) {
+        NotifyPrediction(nav_state);
+    }
+}
+
+void LaserMapping::NotifyPrediction(const NavState& state) {
+    if (prediction_callback_) {
+        prediction_callback_(ToLIOState(state));
     }
 }
 
@@ -201,6 +328,30 @@ void LaserMapping::NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double 
     data.registered_cloud = std::move(registered_cloud);
     data.ivox_map = std::move(ivox_map);
     lio_data_callback_(data);
+}
+
+void LaserMapping::NotifyResult(const NavState& state,
+                                LIOUpdateType update_type,
+                                bool keyframe_selected) {
+    if (!result_callback_) {
+        return;
+    }
+
+    LIOResult result;
+    result.state = ToLIOState(state);
+    result.update_type = update_type;
+    result.cloud = CopyCloud(scan_undistort_);
+    const CloudPtr& display_source =
+        update_type == LIOUpdateType::kScanMatched ? scan_down_body_ : scan_undistort_;
+    result.display_cloud = CopyCloud(display_source);
+    result.body_from_lidar = SE3(SO3(offset_R_lidar_fixed_), offset_t_lidar_fixed_);
+    if (update_type == LIOUpdateType::kScanMatched) {
+        result.projected_cloud = scan_accumulator_.BuildProjectedCloud(result);
+    } else {
+        result.projected_cloud = result.cloud;
+    }
+    result.keyframe_selected = keyframe_selected;
+    result_callback_(result);
 }
 
 bool LaserMapping::Run() {
@@ -239,13 +390,8 @@ bool LaserMapping::Run() {
         skip_lidar_cnt_ = skip_lidar_cnt_ % skip_lidar_num_;
 
         if (skip_lidar_cnt_ != 0) {
-            if (nav_state_callback_) {
-                nav_state_callback_(kf_.GetX());
-            }
-            if (scan_callback_) {
-                scan_callback_(scan_undistort_, kf_.GetX().GetPose());
-            }
             NotifyLIOData(scan_undistort_, kf_.GetX().GetPose(), kf_.GetX().timestamp_);
+            NotifyResult(kf_.GetX(), LIOUpdateType::kPrediction, false);
 
             return false;
         }
@@ -330,21 +476,8 @@ bool LaserMapping::Run() {
     //     LOG(ERROR) << "please check";
     // }
 
-    /// keyframes
-    if (last_kf_ == nullptr) {
-        MakeKF();
-    } else {
-        SE3 last_pose = last_kf_->GetLIOPose();
-        SE3 cur_pose = state_point_.GetPose();
-        if ((last_pose.translation() - cur_pose.translation()).norm() > options_.kf_dis_th_ ||
-            (last_pose.so3().inverse() * cur_pose.so3()).log().norm() > options_.kf_angle_th_) {
-            MakeKF();
-        } else if (!options_.is_in_slam_mode_ && (state_point_.timestamp_ - last_kf_->GetState().timestamp_) > 2.0) {
-            MakeKF();
-        } else if ((last_pose.so3().inverse() * cur_pose.so3()).log().norm() > 1.0 * M_PI / 180.0) {
-            // MapIncremental();
-        }
-    }
+    /// Keyframe selection remains inside the frontend, but IDs belong to PoseGraph.
+    last_keyframe_selected_ = SelectKeyframe();
 
     /// 更新kf_for_imu
     kf_imu_ = kf_;
@@ -357,10 +490,8 @@ bool LaserMapping::Run() {
         }
     }
 
-    if (scan_callback_) {
-        scan_callback_(scan_down_body_, state_point_.GetPose());
-    }
     NotifyLIOData(scan_down_body_, state_point_.GetPose(), state_point_.timestamp_);
+    NotifyResult(state_point_, LIOUpdateType::kScanMatched, last_keyframe_selected_);
 
     LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
               << state_point_.rot_.angleZ<double>() * 180 / M_PI << ", vel: " << state_point_.vel_.transpose()
@@ -369,84 +500,30 @@ bool LaserMapping::Run() {
     return true;
 }
 
-void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
-    auto state = kf_.GetX();
-    SE3 pose_cur(state.rot_, state.pos_);
-    pose_cur = pose_cur.inverse();
-
-    for (auto kf : proj_kfs_) {
-        // LOG(INFO) << "projecting kf: " << kf->GetID();
-        // if (last_kf_) {
-        // auto kf = last_kf_;
-        SE3 pose = pose_cur * kf->GetLIOPose();
-
-        int cnt = 0;
-        for (auto &pt : kf->GetCloud()->points) {
-            Vec3d p = pose * ToVec3d(pt);
-            PointType pcl_pt;
-
-            pcl_pt.x = p.x();
-            pcl_pt.y = p.y();
-            pcl_pt.z = p.z();
-            pcl_pt.intensity = pt.intensity;
-
-            cloud->push_back(pcl_pt);
-            cnt++;
-
-            if (cnt > size_limit) {
-                break;
-            }
-        }
-        // }
-    }
-}
-
-void LaserMapping::MakeKF() {
-    Keyframe::Ptr kf = std::make_shared<Keyframe>(kf_id_++, scan_undistort_, state_point_);
-
-    if (last_kf_) {
-        /// opt pose 用之前的递推
-        SE3 delta = last_kf_->GetLIOPose().inverse() * kf->GetLIOPose();
-        kf->SetOptPose(last_kf_->GetOptPose() * delta);
-    } else {
-        kf->SetOptPose(kf->GetLIOPose());
+bool LaserMapping::SelectKeyframe() {
+    if (!scan_undistort_ || scan_undistort_->empty()) {
+        return false;
     }
 
-    kf->SetState(state_point_);
-
-    LOG(INFO) << "LIO: create kf " << kf->GetID() << ", state: " << state_point_.pos_.transpose()
-              << ", kf opt pose: " << kf->GetOptPose().translation().transpose()
-              << ", lio pose: " << kf->GetLIOPose().translation().transpose() << ", time: " << std::setprecision(14)
-              << state_point_.timestamp_;
-
-    if (options_.is_in_slam_mode_) {
-        all_keyframes_.emplace_back(kf);
+    const LIOState state = ToLIOState(state_point_);
+    if (!keyframe_selector_.Select(state)) {
+        return false;
     }
 
-    last_kf_ = kf;
+    LOG(INFO) << "LIO: select frontend keyframe, state: " << state_point_.pos_.transpose()
+              << ", time: " << std::setprecision(14) << state_point_.timestamp_;
 
     // 有keyframes时更新local map
     Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
 
-    /// 更新project kfs
-    if (proj_kfs_.size() >= options_.max_proj_kfs_) {
-        auto last = proj_kfs_.back();
+    LIOResult selected_result;
+    selected_result.state = ToLIOState(state_point_);
+    selected_result.cloud = CopyCloud(scan_undistort_);
+    selected_result.body_from_lidar = SE3(SO3(offset_R_lidar_fixed_), offset_t_lidar_fixed_);
+    selected_result.keyframe_selected = true;
+    scan_accumulator_.AddSelected(selected_result);
 
-        SE3 delta = last->GetLIOPose().inverse() * kf->GetLIOPose();
-
-        if (delta.translation().norm() < 3 || delta.so3().log().norm() < 20 / 180 * M_PI) {
-            // proj_kfs_.pop_back();
-        } else {
-            proj_kfs_.pop_front();
-            proj_kfs_.emplace_back(kf);
-        }
-    } else {
-        proj_kfs_.emplace_back(kf);
-    }
-
-    // for (auto &kf : proj_kfs_) {
-    //     LOG(INFO) << "proj kf: " << kf->GetID();
-    // }
+    return true;
 }
 
 bool LaserMapping::ProcessPointCloud(const TimedPointCloudData& scan) {
@@ -474,26 +551,6 @@ bool LaserMapping::ProcessPointCloud(const TimedPointCloudData& scan) {
     time_buffer_.push_back(timestamp);
     last_timestamp_lidar_ = timestamp;
     return true;
-}
-
-void LaserMapping::ProcessPointCloud(CloudPtr cloud) {
-    if (!cloud || cloud->empty()) {
-        return;
-    }
-
-    UL lock(mtx_buffer_);
-    scan_count_++;
-
-    const double timestamp = math::ToSec(cloud->header.stamp);
-    if (timestamp < last_timestamp_lidar_) {
-        LOG(ERROR) << "lidar loop back, clear buffer";
-        lidar_buffer_.clear();
-        time_buffer_.clear();
-    }
-
-    lidar_buffer_.push_back(std::move(cloud));
-    time_buffer_.push_back(timestamp);
-    last_timestamp_lidar_ = timestamp;
 }
 
 bool LaserMapping::SyncPackages() {
@@ -630,7 +687,7 @@ void LaserMapping::MapIncremental() {
  * @param s kf state
  * @param ekfom_data H matrix
  */
-void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
+void LaserMapping::ObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
     int cnt_pts = scan_down_body_->size();
 
     std::vector<size_t> index(cnt_pts);
@@ -820,77 +877,5 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
 }
 
 ///////////////////////////  private method /////////////////////////////////////////////////////////////////////
-
-CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res) {
-    CloudPtr global_map(new PointCloudType);
-
-    pcl::VoxelGrid<PointType> voxel;
-    voxel.setLeafSize(res, res, res);
-
-    for (auto &kf : all_keyframes_) {
-        CloudPtr cloud = kf->GetCloud();
-
-        CloudPtr cloud_filter(new PointCloudType);
-
-        if (use_voxel) {
-            voxel.setInputCloud(cloud);
-            voxel.filter(*cloud_filter);
-
-        } else {
-            cloud_filter = cloud;
-        }
-
-        CloudPtr cloud_trans(new PointCloudType);
-
-        if (use_lio_pose) {
-            pcl::transformPointCloud(*cloud_filter, *cloud_trans, kf->GetLIOPose().matrix());
-        } else {
-            pcl::transformPointCloud(*cloud_filter, *cloud_trans, kf->GetOptPose().matrix());
-        }
-
-        *global_map += *cloud_trans;
-
-        LOG(INFO) << "kf " << kf->GetID() << ", pose: " << kf->GetOptPose().translation().transpose();
-    }
-
-    CloudPtr global_map_filtered(new PointCloudType);
-    if (use_voxel) {
-        voxel.setInputCloud(global_map);
-        voxel.filter(*global_map_filtered);
-    } else {
-        global_map_filtered = global_map;
-    }
-
-    global_map_filtered->is_dense = false;
-    global_map_filtered->height = 1;
-    global_map_filtered->width = global_map_filtered->size();
-
-    LOG(INFO) << "global map: " << global_map_filtered->size();
-
-    return global_map_filtered;
-}
-
-void LaserMapping::SaveMap() {
-    /// 保存地图
-    auto global_map = GetGlobalMap(true);
-
-    pcl::io::savePCDFileBinaryCompressed("./data/lio.pcd", *global_map);
-
-    LOG(INFO) << "lio map is saved to ./data/lio.pcd";
-}
-
-CloudPtr LaserMapping::GetRecentCloud() {
-    if (lidar_buffer_.empty()) {
-        return nullptr;
-    }
-
-    return lidar_buffer_.front();
-}
-
-CloudPtr LaserMapping::GetProjCloud() {
-    auto cloud = scan_undistort_;
-    ProjectKFs(cloud);
-    return cloud;
-}
 
 }  // namespace lightning

@@ -97,13 +97,6 @@ bool LocSystem::ProcessLidar(const TimedPointCloudData& cloud) {
     return ProcessLidarOnWorker(cloud);
 }
 
-bool LocSystem::ProcessLidar(CloudPtr cloud) {
-    if (!loc_started_ || !loc_) {
-        return false;
-    }
-    return loc_->ProcessLidar(std::move(cloud));
-}
-
 void LocSystem::ProcessIMUOnWorker(const IMUPtr& imu) {
     if (loc_ && loc_started_ && imu) {
         loc_->ProcessIMU(imu);

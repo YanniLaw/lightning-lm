@@ -7,7 +7,7 @@
 
 #include "common/eigen_types.h"
 #include "common/nav_state.h"
-#include "core/lio/anderson_acceleration.h"
+#include "core/lio/aa-fasterlio/anderson_acceleration.h"
 
 namespace lightning {
 

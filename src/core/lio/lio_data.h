@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "common/eigen_types.h"
 #include "common/point_def.h"
 
@@ -9,7 +11,7 @@ namespace lightning {
 ///
 /// This intentionally contains only project-internal types. ROS adapters,
 /// backend optimization and loop-closing consumers can register independent
-/// callbacks without coupling LaserMapping to a particular transport.
+/// callbacks without coupling a frontend implementation to a transport.
 struct LIOData {
     SE3 pose;
     double timestamp = 0.0;

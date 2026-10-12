@@ -14,9 +14,9 @@
 #include "common/eigen_types.h"
 #include "common/measure_group.h"
 #include "common/point_def.h"
-#include "core/lio/eskf.hpp"
-#include "core/lio/imu_filter.h"
-#include "core/lio/pose6d.h"
+#include "core/lio/aa-fasterlio/eskf.hpp"
+#include "core/lio/aa-fasterlio/imu_filter.h"
+#include "core/lio/aa-fasterlio/pose6d.h"
 #include "utils/timer.h"
 
 namespace lightning {
