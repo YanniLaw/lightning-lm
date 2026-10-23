@@ -1,7 +1,6 @@
 #pragma once
 
-#include <cstdint>
-#include <vector>
+#include "common/point_def.h"
 
 namespace lightning {
 
@@ -12,23 +11,14 @@ enum class LidarType {
     ROBOSENSE = 4,
 };
 
-struct RawLidarPoint {
-    float x = 0.0F;
-    float y = 0.0F;
-    float z = 0.0F;
-    float intensity = 0.0F;
-    std::int64_t time_offset_ns = 0;
-    std::uint16_t ring = 0;
-    std::uint8_t tag = 0;
-    bool has_time = false;
+// Preprocessed cloud and scan start time. After submission only the LIO worker
+// may modify cloud; copying this packet never copies the point array.
+struct TimedPointCloud {
+  double timestamp = 0.0;  // Seconds.
+  CloudPtr cloud;
 };
 
-struct TimedPointCloudData {
-    std::int64_t timestamp_ns = 0;
-    LidarType lidar_type = LidarType::AVIA;
-    bool has_point_time = false;
-    std::vector<RawLidarPoint> points;
-};
+using TimedPointCloudPtr = std::shared_ptr<TimedPointCloud>;
 
 enum class InputResult {
     Accepted,

@@ -21,8 +21,7 @@
 #include "common/eigen_types.h"
 #include "common/keyframe.h"
 #include "common/pose_graph_data.h"
-#include "common/wheel_odometry_data.h"
-#include "core/lio/lio.h"
+#include "core/lio/lio_result.h"
 #include "core/loop_closing/loop_closing.h"
 #include "core/maps/keyframe_map.h"
 #include "core/optimization/graph_optimizer.h"
@@ -73,9 +72,6 @@ class PoseGraph {
     // Accepts a scan-matched frontend result and assigns the backend ID. The
     // result is queued and processed by the unified backend work queue.
     Keyframe::Ptr AddKeyframe(const LIOResult& result);
-
-    // Wheel input is reserved for future graph constraints.
-    LIOInputStatus AddWheelOdometry(const WheelOdometryData& data);
 
     // Returns a snapshot of the currently committed graph state. Use
     // FlushAndGetMapSnapshot before saving when all queued work must be done.

@@ -1,19 +1,23 @@
 #pragma once
 
-#include <geometry_msgs/msg/pose_stamped.hpp>
-#include <nav_msgs/msg/occupancy_grid.hpp>
-#include <nav_msgs/msg/path.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_ros/transform_broadcaster.h>
-#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <memory>
 #include <mutex>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <string>
+#include <vector>
+#include <visualization_msgs/msg/marker_array.hpp>
 
+#include "common/eigen_types.h"
 #include "common/grid_map_data.h"
 #include "common/pose_graph_data.h"
 #include "core/lio/lio_data.h"
@@ -23,6 +27,13 @@ namespace lightning::ros {
 /// ROS-only visualization consumer for core LIO and pose graph outputs.
 class RosVisualization {
    public:
+    struct TfOptions {
+      bool enabled = true;
+      // Frame name for the physical LiDAR pose.
+      std::string frame_id = "base_link";
+      SE3 imu_from_lidar = SE3();
+    };
+    void ConfigureTf(const TfOptions& options);
     explicit RosVisualization(const rclcpp::Node::SharedPtr& node, double local_map_publish_hz = 2.0,
                               std::size_t local_map_max_scans = 200);
 
@@ -46,6 +57,8 @@ class RosVisualization {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ivox_map_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_pub_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    TfOptions tf_options_;
+    std::mutex tf_mutex_;
     nav_msgs::msg::Path lio_path_;
     rclcpp::Time last_map_publish_time_{0, 0, RCL_ROS_TIME};
     const double local_map_publish_period_sec_;
@@ -61,5 +74,8 @@ class RosVisualization {
     std::size_t last_node_id_marker_count_ = 0;
     rclcpp::TimerBase::SharedPtr pose_graph_publish_timer_;
 };
+
+std::vector<geometry_msgs::msg::TransformStamped> MakeLIOTransforms(
+    const LIOData& data, const RosVisualization::TfOptions& options);
 
 }  // namespace lightning::ros

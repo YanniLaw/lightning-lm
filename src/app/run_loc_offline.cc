@@ -7,8 +7,8 @@
 #include <map>
 #include <memory>
 
+#include "core/lio/pointcloud_preprocess.h"
 #include "core/localization/localization.h"
-#include "ros/sensor_bridge.h"
 #include "ui/pangolin_window.h"
 #include "utils/timer.h"
 #include "wrapper/bag_io.h"
@@ -71,8 +71,8 @@ int main(int argc, char** argv) {
     std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
     std::string livox_topic = yaml.GetValue<std::string>("common", "livox_lidar_topic");
     std::string imu_topic = yaml.GetValue<std::string>("common", "imu_topic");
-    const auto lidar_type = static_cast<lightning::LidarType>(yaml.GetValue<int>("fasterlio", "lidar_type"));
-    const double velodyne_time_scale = yaml.GetValue<double>("fasterlio", "time_scale");
+    PointCloudPreprocess preprocess;
+    if (!preprocess.Init(YAML::LoadFile(FLAGS_config))) return -1;
 
     rosbag
         .AddImuHandle(imu_topic,
@@ -82,19 +82,18 @@ int main(int argc, char** argv) {
                           return true;
                       })
         .AddPointCloud2Handle(lidar_topic,
-                              [&loc, lidar_type, velodyne_time_scale](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                                  TimedPointCloudData scan;
-                                  if (lightning::ros::ToTimedPointCloudData(*cloud, lidar_type, velodyne_time_scale,
-                                                                             scan)) {
+                              [&loc, &preprocess](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                                  TimedPointCloud scan;
+                                  if (preprocess.Process(*cloud, scan)) {
                                       loc.ProcessLidar(scan);
                                   }
                                   usleep(1000);
                                   return true;
                               })
         .AddLivoxCloudHandle(livox_topic,
-                             [&loc](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-                                 TimedPointCloudData scan;
-                                 if (lightning::ros::ToTimedPointCloudData(*cloud, scan)) {
+                             [&loc, &preprocess](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                                 TimedPointCloud scan;
+                                 if (preprocess.Process(*cloud, scan)) {
                                      loc.ProcessLidar(scan);
                                  }
                                  usleep(1000);

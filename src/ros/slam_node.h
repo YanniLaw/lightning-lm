@@ -1,17 +1,20 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <string>
 
-#include "lightning/srv/save_map.hpp"
-
-#include "core/system/slam.h"
 #include "common/sensor_data.h"
+#include "common/wheel_odometry_options.h"
+#include "core/system/slam.h"
+#include "lightning/srv/save_map.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "core/lio/pointcloud_preprocess.h"
 #include "ui/pangolin_window.h"
 
 namespace lightning::ros {
@@ -34,8 +37,10 @@ class SlamNode final : public rclcpp::Node {
     void HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr message);
 
     std::string config_path_;
-    LidarType lidar_type_ = LidarType::AVIA;
-    double velodyne_time_scale_ = 1e-3;
+    PointCloudPreprocess preprocess_;
+    WheelOdometryOptions wheel_options_;
+    std::mutex wheel_input_mutex_;
+    std::atomic_bool stopping_ = false;
     std::shared_ptr<SlamSystem> system_;
     std::shared_ptr<ui::PangolinWindow> ui_;
     std::shared_ptr<RosVisualization> visualization_;

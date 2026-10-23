@@ -13,10 +13,10 @@ namespace lightning {
 /// backend optimization and loop-closing consumers can register independent
 /// callbacks without coupling a frontend implementation to a transport.
 struct LIOData {
-    SE3 pose;
+    SE3 pose;  // T_WI: pose of the actual IMU measurement frame.
     double timestamp = 0.0;
-    std::shared_ptr<const PointCloudType> registered_cloud;
-    std::shared_ptr<const PointCloudType> ivox_map;
+    std::shared_ptr<const PointCloudType> registered_cloud;  // Map frame.
+    std::shared_ptr<const PointCloudType> ivox_map;  // Map frame.
 };
 
 }  // namespace lightning

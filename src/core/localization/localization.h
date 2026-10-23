@@ -56,7 +56,7 @@ class Localization {
     bool Init(const std::string& yaml_path, const std::string& global_map_path);
 
     /// Process a transport-independent lidar scan.
-    bool ProcessLidar(const TimedPointCloudData& scan);
+    bool ProcessLidar(const TimedPointCloud& scan);
 
     /// Process an internal IMU sample.
     void ProcessIMU(const IMUPtr& imu);

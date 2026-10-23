@@ -1,25 +1,22 @@
-//
-// Created by xiang on 25-3-12.
-//
+#ifndef LIGHTNING_COMMON_ODOM_H_
+#define LIGHTNING_COMMON_ODOM_H_
 
-#ifndef LIGHTNING_ODOM_H
-#define LIGHTNING_ODOM_H
+#include <memory>
 
 #include "common/eigen_types.h"
 
 namespace lightning {
 
-/// 内部定义的里程计观测，如果需要ROS，则从odom的消息转换过来
+// Wheel-encoder odometry. Message covariance is ignored.
 struct Odom {
-    double timestamp_ = 0;
-    SE3 pose;
-
-    Vec3d linear;   // 线速度
-    Vec3d angular;  // 角速度（若有）
+  double timestamp = 0.0;  // Seconds.
+  SE3 pose = SE3();
+  Vec3d linear_velocity = Vec3d::Zero();
+  Vec3d angular_velocity = Vec3d::Zero();
 };
 
 using OdomPtr = std::shared_ptr<Odom>;
 
 }  // namespace lightning
 
-#endif  // LIGHTNING_ODOM_H
+#endif  // LIGHTNING_COMMON_ODOM_H_

@@ -14,7 +14,7 @@ LocSystem::LocSystem(LocSystem::Options options) : options_(options) {
     sensor_dispatcher_ = std::make_unique<sys::SensorDispatcher>(
         dispatcher_options,
         [this](const IMUPtr& imu) { ProcessIMUOnWorker(imu); },
-        [this](const TimedPointCloudData& cloud) { ProcessLidarOnWorker(cloud); });
+        [this](const TimedPointCloud& cloud) { ProcessLidarOnWorker(cloud); });
 }
 
 LocSystem::~LocSystem() { Stop(); }
@@ -82,13 +82,12 @@ void LocSystem::ProcessIMU(const IMUPtr& imu) {
     ProcessIMUOnWorker(imu);
 }
 
-bool LocSystem::ProcessLidar(const TimedPointCloudData& cloud) {
-    if (!loc_started_ || !loc_ || cloud.points.empty()) {
+bool LocSystem::ProcessLidar(const TimedPointCloud& cloud) {
+    if (!loc_started_ || !loc_ || !cloud.cloud || cloud.cloud->empty()) {
         return false;
     }
     if (sensor_dispatcher_) {
-        auto scan = std::make_shared<TimedPointCloudData>(cloud);
-        const InputResult result = sensor_dispatcher_->AddPointCloud(std::move(scan));
+        const InputResult result = sensor_dispatcher_->AddPointCloud(cloud);
         if (result != InputResult::Accepted && result != InputResult::NotRunning) {
             LOG(WARNING) << "reject lidar input: " << static_cast<int>(result);
         }
@@ -103,7 +102,7 @@ void LocSystem::ProcessIMUOnWorker(const IMUPtr& imu) {
     }
 }
 
-bool LocSystem::ProcessLidarOnWorker(const TimedPointCloudData& cloud) {
+bool LocSystem::ProcessLidarOnWorker(const TimedPointCloud& cloud) {
     return loc_ && loc_started_ && loc_->ProcessLidar(cloud);
 }
 

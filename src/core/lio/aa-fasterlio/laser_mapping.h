@@ -18,11 +18,11 @@
 #include "common/imu.h"
 #include "common/options.h"
 #include "common/std_types.h"
+#include "common/wheel_odometry_options.h"
 #include "core/ivox3d/ivox3d.h"
 #include "core/lio/aa-fasterlio/eskf.hpp"
 #include "core/lio/aa-fasterlio/imu_processing.hpp"
 #include "core/lio/keyframe_selector.h"
-#include "core/lio/aa-fasterlio/pointcloud_preprocess.h"
 #include "core/lio/lio.h"
 #include "core/lio/scan_accumulator.h"
 
@@ -65,8 +65,6 @@ class LaserMapping final : public LIO {
     bool Init(const std::string& config_yaml);
     bool Init(const std::string& config_yaml, const LIOOptions& options) override;
 
-    LIOCapabilities GetCapabilities() const override { return {true, false}; }
-
     void SetResultCallback(ResultCallback callback) override {
         result_callback_ = std::move(callback);
     }
@@ -78,23 +76,27 @@ class LaserMapping final : public LIO {
     }
 
     LIOInputStatus AddImu(const IMUPtr& imu) override;
-    LIOInputStatus AddPointCloud(const TimedPointCloudData& scan) override;
-    LIOInputStatus AddWheelOdometry(const WheelOdometryData& data) override;
+    LIOInputStatus AddPointCloud(const TimedPointCloud& scan) override;
+    LIOInputStatus AddWheelOdometry(const Odom& data) override;
     void Stop() override;
 
    private:
     bool Run();
     bool HasPendingLidar() const { return lidar_pushed_ || !lidar_buffer_.empty(); }
+    bool IsWheelOdomEnabled() const;
 
     // These methods are implementation details behind the transport-neutral
     // AddImu() and AddPointCloud() entry points.
-    bool ProcessPointCloud(const TimedPointCloudData& scan);
+    bool ProcessPointCloud(const TimedPointCloud& scan);
     void ProcessIMU(const IMUPtr& imu);
+    bool AdvanceImuPrediction(const IMUPtr& imu);
 
-    // sync lidar with imu
+    // Sync lidar with IMU and wheel odometry.
     bool SyncPackages();
+    void RebuildImuPrediction();
+    void SyncStateAndPrediction(double scan_end_time);
 
-    void ObsModel(NavState& s, ESKF::CustomObservationModel& obs);
+    void LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs);
 
     inline void PointBodyToWorld(const PointType& pi, PointType& po) {
         Vec3d p_global(state_point_.rot_ *
@@ -124,8 +126,9 @@ class LaserMapping final : public LIO {
     /// modules
     IVoxType::Options ivox_options_;
     std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
-    std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // point cloud preprocess
     std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // imu process
+    WheelOdometryOptions wheel_options_;
+    IMUPtr last_prediction_imu_ = nullptr;
     DataCallback lio_data_callback_;
     ResultCallback result_callback_;
     PredictionCallback prediction_callback_;
@@ -158,10 +161,10 @@ class LaserMapping final : public LIO {
     std::vector<char> point_selected_icp_;  // 点到点的selected points
 
     std::mutex mtx_buffer_;
-    std::deque<double> time_buffer_;
 
-    std::deque<PointCloudType::Ptr> lidar_buffer_;
+    std::deque<TimedPointCloud> lidar_buffer_;
     std::deque<lightning::IMUPtr> imu_buffer_;
+    std::deque<OdomPtr> odom_buffer_;
 
     /// options
     bool keep_first_imu_estimation_ = false;  // 在没有建立地图前，是否要使用前几帧的IMU状态
@@ -169,6 +172,8 @@ class LaserMapping final : public LIO {
     double last_timestamp_lidar_ = 0;
     double lidar_end_time_ = 0;
     double last_timestamp_imu_ = -1.0;
+    double last_timestamp_odom_ = 0.0;
+    double last_synced_odom_time_ = 0.0;
     double first_lidar_time_ = 0.0;
     bool lidar_pushed_ = false;
 
@@ -188,7 +193,7 @@ class LaserMapping final : public LIO {
     double last_lidar_time_ = 0;
 
     ///////////////////////// EKF inputs and output ///////////////////////////////////////////////////////
-    MeasureGroup measures_;  // sync IMU and lidar scan
+    MeasureGroup measures_;  // Synchronized lidar, IMU and wheel odometry.
 
     ESKF kf_;      // 点云时刻的IMU状态
     ESKF kf_imu_;  // imu 最新时刻的eskf状态

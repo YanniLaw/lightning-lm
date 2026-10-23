@@ -19,7 +19,7 @@ Features of Lightning-LM:
    medium-term, permanent), default is permanent
 7. [done] High-frequency IMU smooth output, standard, 100Hz
 8. GPS geoinformation association, optional (TODO)
-9. Vehicle odometry input, optional (TODO)
+9. [done] Optional encoder speed and NHC fusion in the mapping frontend
 10. [done] Lightweight optimization library miao and incremental optimization (derived from g2o, but lighter and faster,
     supports incremental optimization, no need to rebuild optimization model), standard, used in both loop closure and
     localization
@@ -146,6 +146,25 @@ For example, calling the offline mapping program on the NCLT dataset:
 
 If you want to call the online version, just change the offline part to online.
 
+### Wheel Speed Fusion
+
+For normal wheel motion on indoor floors, enable `system.with_wheel_odometry_fusion` and set
+`common.wheel_odom_topic`. The mapping frontend uses encoder forward speed together with soft lateral and vertical
+zero-velocity constraints at the wheel center through the existing `WHEEL_SPEED` observation callback.
+
+Configure `wheel_odometry.extrinsic_R/T` as the lidar pose in the wheel-center frame. The frontend combines its rigid
+inverse with `fasterlio.extrinsic_R/T` to obtain the wheel-to-IMU transform; it does not query TF or infer axes from message
+frame names. Message covariance is ignored.
+
+The three fixed variances are `default_velocity_variance` (forward, default `0.01`), `nhc_lateral_variance` (default `0.01`)
+and `nhc_vertical_variance` (default `0.04`), all in `(m/s)^2`. Smaller values give stronger constraints. The existing
+`wheel_time_offset` remains a fixed timestamp adjustment in seconds, default `0.0`. NHC is included when fusion is enabled;
+wheel trust modes and adaptive rejection parameters have been removed.
+
+See [the Temi configuration](config/temi_mid360s_wheel.yaml) and
+[the observation design](docs/superpowers/specs/2026-10-21-wheel-speed-nhc-design.md). Disabling fusion removes the wheel
+subscription and permits omitting the wheel configuration.
+
 ## Testing on Datasets
 
 You can directly use our converted datasets. If you need the original datasets, you need to convert them to the ros2 db3
@@ -208,7 +227,7 @@ The IMU and LiDAR extrinsic parameters can default to zero; we are not sensitive
 
 The `fasterlio.time_scale` related to timestamps is sensitive. You should pay attention to whether the LiDAR point cloud
 has timestamps for each point and if they are calculated correctly. This code is in
-`src/core/lio/aa-fasterlio/pointcloud_preprocess`.
+`src/core/lio/pointcloud_preprocess`.
 
 Refer to the next section for other parameter adjustments.
 

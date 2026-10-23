@@ -421,8 +421,8 @@ inline CloudPtr VoxelGrid(CloudPtr cloud, float voxel_size = 0.05) {
     return output;
 }
 
-/// pcl 时间戳
-inline double ToSec(uint64_t t) { return double(t) * 1e-9; }
+/// Convert the microsecond timestamp in a PCL header to seconds.
+inline double ToSec(uint64_t t) { return double(t) * 1e-6; }
 
 // convert from pcl point to eigen
 template <typename T, int dim, typename PointType>

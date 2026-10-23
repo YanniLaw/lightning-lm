@@ -16,9 +16,10 @@
 #include "common/grid_map_data.h"
 #include "common/imu.h"
 #include "common/keyframe.h"
+#include "common/odom.h"
 #include "common/pose_graph_data.h"
 #include "common/sensor_data.h"
-#include "common/wheel_odometry_data.h"
+#include "common/wheel_odometry_options.h"
 #include "core/lio/lio.h"
 #include "core/lio/lio_data.h"
 #include "core/lio/lio_result.h"
@@ -70,7 +71,7 @@ class SlamSystem {
     void ProcessIMU(const lightning::IMUPtr& imu);
 
     /// Process a transport-independent lidar scan.
-    bool ProcessLidar(const TimedPointCloudData& cloud);
+    bool ProcessLidar(const TimedPointCloud& cloud);
 
     /// Register consumers before starting the system.
     void SetLIODataCallback(std::function<void(const LIOData&)> callback);
@@ -81,7 +82,7 @@ class SlamSystem {
     void SetPoseGraphDataCallback(std::function<void(PoseGraphDataPtr)> callback);
 
     /// Wheel data is accepted as an extension point and is not fused yet.
-    LIOInputStatus ProcessWheelOdometry(const WheelOdometryData& data);
+    LIOInputStatus ProcessWheelOdometry(const Odom& data);
 
     sys::SensorDispatcher::Stats GetInputStats() const;
 
@@ -90,11 +91,13 @@ class SlamSystem {
 
    private:
     void ProcessIMUOnWorker(const IMUPtr& imu);
-    bool ProcessLidarOnWorker(const TimedPointCloudData& cloud);
+    bool ProcessLidarOnWorker(const TimedPointCloud& cloud);
+    void ProcessWheelOdometryOnWorker(const Odom& data);
     void HandleLIOPrediction(const LIOState& state);
     void HandleLIOResult(const LIOResult& result);
 
     Options options_;
+    WheelOdometryOptions wheel_options_;
     std::atomic_bool running_ = false;
 
     std::string map_name_;  // 地图名

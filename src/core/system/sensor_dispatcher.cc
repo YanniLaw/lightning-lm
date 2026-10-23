@@ -1,30 +1,33 @@
 #include "core/system/sensor_dispatcher.h"
 
+#include <glog/logging.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
-#include <glog/logging.h>
-
 namespace lightning::sys {
 namespace {
 
-constexpr std::int64_t kNanosecondsPerSecond = 1000000000LL;
-
-bool PointCloudBytes(const TimedPointCloudData& scan, std::size_t& bytes) {
-    if (scan.points.size() > std::numeric_limits<std::size_t>::max() / sizeof(RawLidarPoint)) {
+bool PointCloudBytes(const TimedPointCloud& scan, std::size_t& bytes) {
+    if (scan.cloud->points.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(PointType)) {
         return false;
     }
-    bytes = scan.points.size() * sizeof(RawLidarPoint);
+    bytes = scan.cloud->points.capacity() * sizeof(PointType);
     return true;
 }
 
 }  // namespace
 
-SensorDispatcher::SensorDispatcher(Options options, ImuCallback imu_callback, ScanCallback scan_callback)
-    : options_(options), imu_callback_(std::move(imu_callback)), scan_callback_(std::move(scan_callback)) {}
+SensorDispatcher::SensorDispatcher(Options options, ImuCallback imu_callback,
+                                   ScanCallback scan_callback,
+                                   WheelCallback wheel_callback)
+    : options_(options),
+      imu_callback_(std::move(imu_callback)),
+      scan_callback_(std::move(scan_callback)),
+      wheel_callback_(std::move(wheel_callback)) {}
 
 SensorDispatcher::~SensorDispatcher() { Stop(StopMode::kCancel); }
 
@@ -48,13 +51,6 @@ InputResult SensorDispatcher::AddImu(IMUPtr imu) {
         return InputResult::InvalidData;
     }
 
-    std::int64_t timestamp_ns = 0;
-    if (!ToNanoseconds(imu->timestamp, timestamp_ns)) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        ++stats_.rejected_invalid;
-        return InputResult::InvalidData;
-    }
-
     std::lock_guard<std::mutex> lock(mutex_);
     if (!started_ || stop_requested_) {
         return InputResult::NotRunning;
@@ -64,12 +60,13 @@ InputResult SensorDispatcher::AddImu(IMUPtr imu) {
         ++stats_.rejected_queue_full;
         return InputResult::QueueFull;
     }
-    if (last_accepted_imu_ns_ >= 0 && timestamp_ns < last_accepted_imu_ns_) {
+    if (last_accepted_imu_time_ >= 0 &&
+        imu->timestamp < last_accepted_imu_time_) {
         ++stats_.rejected_time;
         return InputResult::TimeDiscontinuity;
     }
 
-    last_accepted_imu_ns_ = timestamp_ns;
+    last_accepted_imu_time_ = imu->timestamp;
     imu_queue_.emplace_back(std::move(imu));
     ++stats_.accepted_imu;
     stats_.peak_imu_queue_size = std::max(stats_.peak_imu_queue_size, imu_queue_.size());
@@ -77,15 +74,15 @@ InputResult SensorDispatcher::AddImu(IMUPtr imu) {
     return InputResult::Accepted;
 }
 
-InputResult SensorDispatcher::AddPointCloud(std::shared_ptr<const TimedPointCloudData> scan) {
-    if (!scan || !IsValidScan(*scan)) {
+InputResult SensorDispatcher::AddPointCloud(TimedPointCloud scan) {
+    if (!IsValidScan(scan)) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++stats_.rejected_invalid;
         return InputResult::InvalidData;
     }
 
     std::size_t bytes = 0;
-    if (!PointCloudBytes(*scan, bytes) || bytes > options_.max_point_cloud_bytes) {
+    if (!PointCloudBytes(scan, bytes) || bytes > options_.max_point_cloud_bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         faulted_ = true;
         ++stats_.rejected_queue_full;
@@ -103,17 +100,16 @@ InputResult SensorDispatcher::AddPointCloud(std::shared_ptr<const TimedPointClou
         return InputResult::QueueFull;
     }
 
-    const std::int64_t timestamp_ns = scan->timestamp_ns;
-    if (last_accepted_scan_ns_ >= 0 && timestamp_ns < last_accepted_scan_ns_) {
+    const double timestamp = scan.timestamp;
+    if (last_accepted_scan_time_ >= 0 && timestamp < last_accepted_scan_time_) {
         ++stats_.rejected_time;
         return InputResult::TimeDiscontinuity;
     }
 
     PendingScan pending;
     pending.data = std::move(scan);
-    pending.end_time_ns = ScanEndTimeNs(*pending.data);
     pending.bytes = bytes;
-    last_accepted_scan_ns_ = timestamp_ns;
+    last_accepted_scan_time_ = timestamp;
     queued_point_cloud_bytes_ += bytes;
     scan_queue_.emplace_back(std::move(pending));
     ++stats_.accepted_scans;
@@ -121,6 +117,35 @@ InputResult SensorDispatcher::AddPointCloud(std::shared_ptr<const TimedPointClou
     stats_.peak_point_cloud_bytes = std::max(stats_.peak_point_cloud_bytes, queued_point_cloud_bytes_);
     condition_.notify_one();
     return InputResult::Accepted;
+}
+
+InputResult SensorDispatcher::AddWheelOdometry(const Odom& data) {
+  const double time = data.timestamp;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!started_ || stop_requested_) return InputResult::NotRunning;
+  if (!options_.wheel_fusion_enabled || !std::isfinite(time) || time <= 0 ||
+      !data.linear_velocity.allFinite() || !data.angular_velocity.allFinite() ||
+      options_.max_wheel_queue_size == 0) {
+    ++stats_.invalid_wheel;
+    return InputResult::InvalidData;
+  }
+  if (time < last_accepted_wheel_time_) {
+    ++stats_.time_rejected_wheel;
+    return InputResult::TimeDiscontinuity;
+  }
+  if (time == last_accepted_wheel_time_) {
+    ++stats_.duplicate_wheel;
+    return InputResult::TimeDiscontinuity;
+  }
+  if (wheel_queue_.size() >= options_.max_wheel_queue_size) {
+    wheel_queue_.pop_front();
+    ++stats_.dropped_wheel;
+  }
+  wheel_queue_.push_back(data);
+  last_accepted_wheel_time_ = time;
+  ++stats_.accepted_wheel;
+  condition_.notify_one();
+  return InputResult::Accepted;
 }
 
 void SensorDispatcher::Stop(StopMode mode) {
@@ -132,7 +157,7 @@ void SensorDispatcher::Stop(StopMode mode) {
         stop_requested_ = true;
         drain_on_stop_ = mode == StopMode::kDrain;
         if (!drain_on_stop_) {
-            CancelQueuedWorkLocked(false);
+            CancelQueuedWorkLocked();
         }
     }
     condition_.notify_one();
@@ -167,83 +192,40 @@ bool SensorDispatcher::IsValidImu(const IMUPtr& imu) {
     return imu->angular_velocity.allFinite() && imu->linear_acceleration.allFinite();
 }
 
-bool SensorDispatcher::IsValidScan(const TimedPointCloudData& scan) {
-    if (scan.timestamp_ns <= 0 || scan.points.empty()) {
-        return false;
-    }
-    for (const RawLidarPoint& point : scan.points) {
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
-            !std::isfinite(point.intensity)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool SensorDispatcher::ToNanoseconds(double timestamp_sec, std::int64_t& timestamp_ns) {
-    constexpr double kMaxSeconds =
-        static_cast<double>(std::numeric_limits<std::int64_t>::max()) / kNanosecondsPerSecond;
-    if (!std::isfinite(timestamp_sec) || timestamp_sec < 0.0 || timestamp_sec > kMaxSeconds) {
-        return false;
-    }
-    timestamp_ns = static_cast<std::int64_t>(std::llround(timestamp_sec * kNanosecondsPerSecond));
-    return true;
-}
-
-std::int64_t SensorDispatcher::ScanEndTimeNs(const TimedPointCloudData& scan) {
-    std::int64_t end_time_ns = scan.timestamp_ns;
-    if (!scan.has_point_time) {
-        return end_time_ns;
-    }
-
-    const std::int64_t max_offset =
-        std::numeric_limits<std::int64_t>::max() - scan.timestamp_ns;
-    for (const RawLidarPoint& point : scan.points) {
-        if (point.has_time && point.time_offset_ns <= max_offset) {
-            end_time_ns = std::max(end_time_ns, scan.timestamp_ns + point.time_offset_ns);
-        }
-    }
-    return end_time_ns;
+bool SensorDispatcher::IsValidScan(const TimedPointCloud& scan) {
+  if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0 ||
+      !scan.cloud || scan.cloud->empty()) return false;
+  for (const auto& point : *scan.cloud) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+        !std::isfinite(point.z) || !std::isfinite(point.intensity) ||
+        !std::isfinite(point.time)) return false;
+  }
+  return true;
 }
 
 bool SensorDispatcher::SelectTaskLocked(Task& task) {
     task = Task();
 
-    if (!imu_queue_.empty() && !scan_queue_.empty()) {
-        const PendingScan& scan = scan_queue_.front();
-        std::int64_t queued_imu_timestamp_ns = 0;
-        if (!ToNanoseconds(imu_queue_.front()->timestamp, queued_imu_timestamp_ns)) {
-            return false;
-        }
-
-        if (queued_imu_timestamp_ns <= scan.end_time_ns || last_processed_imu_ns_ < scan.end_time_ns) {
-            task.type = TaskType::kImu;
-            task.imu = std::move(imu_queue_.front());
-            imu_queue_.pop_front();
-            last_processed_imu_ns_ = queued_imu_timestamp_ns;
-            return true;
-        }
-
-        task.type = TaskType::kScan;
-        task.scan = scan.data;
-        queued_point_cloud_bytes_ -= scan.bytes;
-        scan_queue_.pop_front();
+    if (!wheel_queue_.empty()) {
+        task.type = TaskType::kWheel;
+        task.wheel = std::move(wheel_queue_.front());
+        wheel_queue_.pop_front();
         return true;
     }
 
-    if (!imu_queue_.empty()) {
-        std::int64_t queued_imu_timestamp_ns = 0;
-        if (!ToNanoseconds(imu_queue_.front()->timestamp, queued_imu_timestamp_ns)) {
-            return false;
-        }
+    if (!imu_queue_.empty() &&
+        (scan_queue_.empty() || imu_queue_.front()->timestamp <=
+                                    scan_queue_.front().data.timestamp ||
+         last_processed_imu_time_ < scan_queue_.front().data.timestamp)) {
         task.type = TaskType::kImu;
         task.imu = std::move(imu_queue_.front());
         imu_queue_.pop_front();
-        last_processed_imu_ns_ = queued_imu_timestamp_ns;
+        last_processed_imu_time_ = task.imu->timestamp;
         return true;
     }
 
-    if (!scan_queue_.empty() && last_processed_imu_ns_ >= scan_queue_.front().end_time_ns) {
+    if (!scan_queue_.empty() && last_processed_imu_time_ >=
+                                    scan_queue_.front().data.timestamp) {
         const PendingScan& scan = scan_queue_.front();
         task.type = TaskType::kScan;
         task.scan = scan.data;
@@ -255,12 +237,11 @@ bool SensorDispatcher::SelectTaskLocked(Task& task) {
     return false;
 }
 
-void SensorDispatcher::CancelQueuedWorkLocked(bool mark_incomplete_scans) {
+void SensorDispatcher::CancelQueuedWorkLocked() {
+    stats_.cancelled_wheel += wheel_queue_.size();
+    wheel_queue_.clear();
     stats_.cancelled_imu += imu_queue_.size();
     stats_.cancelled_scans += scan_queue_.size();
-    if (mark_incomplete_scans) {
-        stats_.incomplete_scans += scan_queue_.size();
-    }
     imu_queue_.clear();
     scan_queue_.clear();
     queued_point_cloud_bytes_ = 0;
@@ -271,7 +252,12 @@ void SensorDispatcher::Run() {
         Task task;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            condition_.wait(lock, [this]() { return stop_requested_ || !imu_queue_.empty() || !scan_queue_.empty(); });
+            condition_.wait(lock, [this]() {
+              return stop_requested_ || !imu_queue_.empty() ||
+                     !wheel_queue_.empty() ||
+                     (!scan_queue_.empty() && last_processed_imu_time_ >=
+                                                 scan_queue_.front().data.timestamp);
+            });
 
             if (stop_requested_ && !drain_on_stop_) {
                 break;
@@ -279,7 +265,7 @@ void SensorDispatcher::Run() {
 
             if (!SelectTaskLocked(task)) {
                 if (stop_requested_) {
-                    CancelQueuedWorkLocked(true);
+                    CancelQueuedWorkLocked();
                     break;
                 }
                 continue;
@@ -293,12 +279,16 @@ void SensorDispatcher::Run() {
                 }
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++stats_.processed_imu;
+            } else if (task.type == TaskType::kWheel) {
+              if (wheel_callback_) wheel_callback_(*task.wheel);
+              std::lock_guard<std::mutex> lock(mutex_);
+              ++stats_.processed_wheel;
             } else if (task.type == TaskType::kScan) {
-                if (scan_callback_) {
-                    scan_callback_(*task.scan);
-                }
-                std::lock_guard<std::mutex> lock(mutex_);
-                ++stats_.processed_scans;
+              if (scan_callback_) {
+                scan_callback_(task.scan);
+              }
+              std::lock_guard<std::mutex> lock(mutex_);
+              ++stats_.processed_scans;
             }
         } catch (const std::exception& exception) {
             LOG(ERROR) << "sensor dispatcher callback failed: " << exception.what();
@@ -307,7 +297,7 @@ void SensorDispatcher::Run() {
             faulted_ = true;
             stop_requested_ = true;
             drain_on_stop_ = false;
-            CancelQueuedWorkLocked(false);
+            CancelQueuedWorkLocked();
         } catch (...) {
             LOG(ERROR) << "sensor dispatcher callback failed with an unknown exception";
             std::lock_guard<std::mutex> lock(mutex_);
@@ -315,7 +305,7 @@ void SensorDispatcher::Run() {
             faulted_ = true;
             stop_requested_ = true;
             drain_on_stop_ = false;
-            CancelQueuedWorkLocked(false);
+            CancelQueuedWorkLocked();
         }
     }
 }

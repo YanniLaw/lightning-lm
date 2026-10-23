@@ -1,17 +1,20 @@
 #include "core/lio/aa-fasterlio/laser_mapping.h"
 
+#include <yaml-cpp/yaml.h>
+
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
 
-#include <yaml-cpp/yaml.h>
-
 #include "common/options.h"
 #include "core/lightning_math.hpp"
+#include "io/wheel_odometry_options.h"
 
 namespace lightning {
 
 namespace {
+
+constexpr std::size_t kWheelQueueSize = 512;
 
 LIOState ToLIOState(const NavState& state) {
     LIOState result;
@@ -37,17 +40,15 @@ bool IsFinite(const IMUPtr& imu) {
            imu->angular_velocity.allFinite() && imu->linear_acceleration.allFinite();
 }
 
-bool IsFinite(const TimedPointCloudData& scan) {
-    if (scan.timestamp_ns <= 0 || scan.points.empty()) {
-        return false;
-    }
-    for (const RawLidarPoint& point : scan.points) {
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
-            !std::isfinite(point.intensity)) {
-            return false;
-        }
-    }
-    return true;
+bool IsFinite(const TimedPointCloud& scan) {
+  if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0 ||
+      !scan.cloud || scan.cloud->empty()) return false;
+  for (const auto& point : *scan.cloud) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+        !std::isfinite(point.z) || !std::isfinite(point.intensity) ||
+        !std::isfinite(point.time)) return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -70,6 +71,14 @@ bool LaserMapping::Init(const std::string& config_yaml) {
     if (!LoadParamsFromYAML(config_yaml)) {
         return false;
     }
+    if (IsWheelOdomEnabled()) {
+      const SE3 imu_from_lidar(SO3(offset_R_lidar_fixed_), offset_t_lidar_fixed_);
+      p_imu_->ConfigureWheelSpeedObservation(
+          imu_from_lidar * wheel_options_.configured_lidar_from_wheel.value(),
+          Vec3d(wheel_options_.default_velocity_variance,
+                wheel_options_.nhc_lateral_variance,
+                wheel_options_.nhc_vertical_variance));
+    }
 
     // localmap init (after LoadParams)
     ivox_ = std::make_shared<IVoxType>(ivox_options_);
@@ -78,7 +87,11 @@ bool LaserMapping::Init(const std::string& config_yaml) {
     ESKF::Options eskf_options;
     eskf_options.max_iterations_ = fasterlio::NUM_MAX_ITERATIONS;
     eskf_options.epsi_ = 1e-3 * Eigen::Matrix<double, ESKF::state_dim_, 1>::Ones();
-    eskf_options.lidar_obs_func_ = [this](NavState &s, ESKF::CustomObservationModel &obs) { ObsModel(s, obs); };
+    eskf_options.lidar_obs_func_ = [this](NavState &s, ESKF::CustomObservationModel &obs) { LidarObsModel(s, obs); };
+    eskf_options.wheelspeed_obs_func_ =
+        [this](NavState& state, ESKF::CustomObservationModel& observation) {
+          p_imu_->WheelSpeedObsModel(state, observation);
+        };
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
 
@@ -89,11 +102,16 @@ bool LaserMapping::Init(const std::string& config_yaml) {
 
 bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     // get params from yaml
-    int lidar_type, ivox_nearby_type;
+    int ivox_nearby_type;
     double gyr_cov, acc_cov, b_gyr_cov, b_acc_cov;
     double filter_size_scan;
 
     auto yaml = YAML::LoadFile(yaml_file);
+    std::string wheel_error;
+    if (!ParseWheelOdometryOptions(yaml, wheel_options_, wheel_error)) {
+      LOG(ERROR) << wheel_error;
+      return false;
+    }
     try {
         fasterlio::NUM_MAX_ITERATIONS = yaml["fasterlio"]["max_iteration"].as<int>();
         fasterlio::ESTI_PLANE_THRESHOLD = yaml["fasterlio"]["esti_plane_threshold"].as<float>();
@@ -105,12 +123,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         acc_cov = yaml["fasterlio"]["acc_cov"].as<float>();
         b_gyr_cov = yaml["fasterlio"]["b_gyr_cov"].as<float>();
         b_acc_cov = yaml["fasterlio"]["b_acc_cov"].as<float>();
-        preprocess_->Blind() = yaml["fasterlio"]["blind"].as<double>();
-        preprocess_->TimeScale() = yaml["fasterlio"]["time_scale"].as<double>();
-        lidar_type = yaml["fasterlio"]["lidar_type"].as<int>();
-        preprocess_->NumScans() = yaml["fasterlio"]["scan_line"].as<int>();
-        preprocess_->PointFilterNum() = yaml["fasterlio"]["point_filter_num"].as<int>();
-
         extrinT_ = yaml["fasterlio"]["extrinsic_T"].as<std::vector<double>>();
         extrinR_ = yaml["fasterlio"]["extrinsic_R"].as<std::vector<double>>();
 
@@ -120,11 +132,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
 
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
         enable_skip_lidar_ = skip_lidar_num_ > 0;
-
-        float height_max = yaml["roi"]["height_max"].as<float>();
-        float height_min = yaml["roi"]["height_min"].as<float>();
-
-        preprocess_->SetHeightROI(height_max, height_min);
 
         options_.kf_dis_th_ = yaml["fasterlio"]["kf_dis_th"].as<double>();
         options_.kf_angle_th_ = yaml["fasterlio"]["kf_angle_th"].as<double>() * M_PI / 180.0;
@@ -148,24 +155,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
 
     } catch (...) {
         LOG(ERROR) << "bad conversion";
-        return false;
-    }
-
-    LOG(INFO) << "lidar_type " << lidar_type;
-    if (lidar_type == 1) {
-        preprocess_->SetLidarType(LidarType::AVIA);
-        LOG(INFO) << "Using AVIA Lidar";
-    } else if (lidar_type == 2) {
-        preprocess_->SetLidarType(LidarType::VELO32);
-        LOG(INFO) << "Using Velodyne 32 Lidar";
-    } else if (lidar_type == 3) {
-        preprocess_->SetLidarType(LidarType::OUST64);
-        LOG(INFO) << "Using OUST 64 Lidar";
-    } else if (lidar_type == 4) {
-        preprocess_->SetLidarType(LidarType::ROBOSENSE);
-        LOG(INFO) << "Using RoboSense Lidar";
-    } else {
-        LOG(WARNING) << "unknown lidar_type";
         return false;
     }
 
@@ -196,7 +185,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
 }
 
 LaserMapping::LaserMapping(Options options) : options_(options) {
-    preprocess_.reset(new PointCloudPreprocess());
     p_imu_.reset(new ImuProcess());
 }
 
@@ -207,8 +195,10 @@ LIOInputStatus LaserMapping::AddImu(const IMUPtr& imu) {
     if (!IsFinite(imu)) {
         return LIOInputStatus::kInvalidData;
     }
-    if (last_timestamp_imu_ >= 0.0 && imu->timestamp < last_timestamp_imu_) {
-        return LIOInputStatus::kTimeDiscontinuity;
+    if ((IsWheelOdomEnabled() && imu->timestamp <= 0.0) ||
+        (last_timestamp_imu_ >= 0.0 &&
+         imu->timestamp < last_timestamp_imu_)) {
+      return LIOInputStatus::kTimeDiscontinuity;
     }
 
     ProcessIMU(imu);
@@ -218,7 +208,7 @@ LIOInputStatus LaserMapping::AddImu(const IMUPtr& imu) {
     return LIOInputStatus::kAccepted;
 }
 
-LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloudData& scan) {
+LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloud& scan) {
     if (!running_.load()) {
         return LIOInputStatus::kNotRunning;
     }
@@ -226,7 +216,7 @@ LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloudData& scan) {
         return LIOInputStatus::kInvalidData;
     }
 
-    const double timestamp = static_cast<double>(scan.timestamp_ns) * 1e-9;
+    const double timestamp = scan.timestamp;
     if (timestamp < last_timestamp_lidar_) {
         return LIOInputStatus::kTimeDiscontinuity;
     }
@@ -238,19 +228,39 @@ LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloudData& scan) {
     return LIOInputStatus::kAccepted;
 }
 
-LIOInputStatus LaserMapping::AddWheelOdometry(const WheelOdometryData& data) {
-    if (!running_.load()) {
-        return LIOInputStatus::kNotRunning;
-    }
-    if (data.timestamp_ns <= 0) {
-        return LIOInputStatus::kInvalidData;
-    }
-    LOG_EVERY_N(INFO, 100) << "wheel odometry input is received but not fused by aa_fasterlio";
+LIOInputStatus LaserMapping::AddWheelOdometry(const Odom& data) {
+  if (!running_.load()) {
+    return LIOInputStatus::kNotRunning;
+  }
+  if (!IsWheelOdomEnabled()) {
     return LIOInputStatus::kUnsupported;
+  }
+  const double time = data.timestamp;
+  if (!std::isfinite(time) || time <= 0.0 ||
+      !data.linear_velocity.allFinite() || !data.angular_velocity.allFinite()) {
+    return LIOInputStatus::kInvalidData;
+  }
+  if (time <= last_synced_odom_time_ || time < last_timestamp_odom_) {
+    return LIOInputStatus::kTimeDiscontinuity;
+  }
+  if (time == last_timestamp_odom_) {
+    return LIOInputStatus::kTimeDiscontinuity;
+  }
+  last_timestamp_odom_ = time;
+  if (odom_buffer_.size() >= kWheelQueueSize) {
+    odom_buffer_.pop_front();
+  }
+  odom_buffer_.push_back(std::make_shared<Odom>(data));
+  return LIOInputStatus::kAccepted;
 }
 
 void LaserMapping::Stop() {
-    running_.store(false);
+  running_.store(false);
+  imu_buffer_.clear();
+  lidar_buffer_.clear();
+  odom_buffer_.clear();
+  measures_ = MeasureGroup{};
+  lidar_pushed_ = false;
 }
 
 void LaserMapping::ProcessIMU(const IMUPtr& imu) {
@@ -271,20 +281,18 @@ void LaserMapping::ProcessIMU(const IMUPtr& imu) {
             imu_buffer_.clear();
         }
 
+        IMUPtr prepared = imu;
         if (p_imu_->IsIMUInited()) {
-            /// 更新最新imu状态
-            kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity,
-                            imu->linear_acceleration);
-
-            // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
-
+          prepared = std::make_shared<IMU>(p_imu_->PreprocessImu(*imu));
+          if (AdvanceImuPrediction(prepared)) {
             nav_state = kf_imu_.GetX();
             should_notify = true;
+          }
         }
 
         last_timestamp_imu_ = timestamp;
 
-        imu_buffer_.emplace_back(imu);
+        imu_buffer_.emplace_back(std::move(prepared));
     }
 
     if (should_notify) {
@@ -361,9 +369,30 @@ bool LaserMapping::Run() {
     }
 
     /// IMU process, kf prediction, undistortion
-    p_imu_->Process(measures_, kf_, scan_undistort_);
+    const bool imu_was_initialized = p_imu_->IsIMUInited();
+    const auto previous_propagation_time = p_imu_->GetLastPropagationTime();
+    if (IsWheelOdomEnabled()) {
+        const bool wheel_updates_allowed =
+            imu_was_initialized && !flg_first_scan_;
+        p_imu_->ProcessWithWheelOdometry(
+            measures_, kf_, scan_undistort_, wheel_updates_allowed);
+    } else {
+        p_imu_->Process(measures_, kf_, scan_undistort_);
+    }
+
+    if (!imu_was_initialized && p_imu_->IsIMUInited()) {
+      // Pending samples were received before initialization and are still raw.
+      for (auto& imu : imu_buffer_) {
+        imu = std::make_shared<IMU>(p_imu_->PreprocessImu(*imu));
+      }
+      RebuildImuPrediction();
+    }
 
     if (scan_undistort_ == nullptr || scan_undistort_->empty()) {
+        if (imu_was_initialized &&
+            p_imu_->GetLastPropagationTime() > previous_propagation_time) {
+            SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
+        }
         LOG(WARNING) << "No point, skip this scan!";
         return false;
     }
@@ -382,6 +411,7 @@ bool LaserMapping::Run() {
         first_lidar_time_ = measures_.lidar_end_time_;
         state_point_.timestamp_ = lidar_end_time_;
         flg_first_scan_ = false;
+        SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
         return true;
     }
 
@@ -390,6 +420,7 @@ bool LaserMapping::Run() {
         skip_lidar_cnt_ = skip_lidar_cnt_ % skip_lidar_num_;
 
         if (skip_lidar_cnt_ != 0) {
+            SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
             NotifyLIOData(scan_undistort_, kf_.GetX().GetPose(), kf_.GetX().timestamp_);
             NotifyResult(kf_.GetX(), LIOUpdateType::kPrediction, false);
 
@@ -432,6 +463,9 @@ bool LaserMapping::Run() {
     }
 
     if (cur_pts < 5) {
+        SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
+        NotifyLIOData(scan_undistort_, state_point_.GetPose(), state_point_.timestamp_);
+        NotifyResult(state_point_, LIOUpdateType::kPrediction, false);
         LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", " << scan_down_body_->size();
         return false;
     }
@@ -445,14 +479,20 @@ bool LaserMapping::Run() {
     point_selected_icp_.resize(cur_pts, 1);
     plane_coef_.resize(cur_pts, Vec4f::Zero());
 
-    auto pred_state = kf_.GetX();
+    const auto pred_state = kf_.GetX();
     // pred_state.pos_ = state_point_.pos_;  // 假定位置不动行不行,防止速度漂移
     // kf_.ChangeX(pred_state);
 
-    kf_.Update(ESKF::ObsType::LIDAR, 1.0);
+    const bool matched = kf_.Update(ESKF::ObsType::LIDAR, 1.0);
+    SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
 
-    state_point_ = kf_.GetX();
-    state_point_.timestamp_ = measures_.lidar_end_time_;
+    if (!matched) {
+        NotifyLIOData(scan_undistort_, state_point_.GetPose(),
+                        state_point_.timestamp_);
+        NotifyResult(state_point_, LIOUpdateType::kPrediction, false);
+        LOG(WARNING) << "LIDAR update failed, keeping prediction.";
+        return false;
+    }
 
     const double delta_translation = (pred_state.pos_ - state_point_.pos_).norm();
     const double delta_rotation_deg = (pred_state.rot_.inverse() * state_point_.rot_).log().norm() * 180.0 / M_PI;
@@ -479,17 +519,6 @@ bool LaserMapping::Run() {
     /// Keyframe selection remains inside the frontend, but IDs belong to PoseGraph.
     last_keyframe_selected_ = SelectKeyframe();
 
-    /// 更新kf_for_imu
-    kf_imu_ = kf_;
-    if (!measures_.imu_.empty()) {
-        double t = measures_.imu_.back()->timestamp;
-        for (auto &imu : imu_buffer_) {
-            double dt = imu->timestamp - t;
-            kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, imu->linear_acceleration);
-            t = imu->timestamp;
-        }
-    }
-
     NotifyLIOData(scan_down_body_, state_point_.GetPose(), state_point_.timestamp_);
     NotifyResult(state_point_, LIOUpdateType::kScanMatched, last_keyframe_selected_);
 
@@ -498,6 +527,42 @@ bool LaserMapping::Run() {
               << ", grav: " << state_point_.grav_.transpose() << ", grav norm: " << state_point_.grav_.norm();
 
     return true;
+}
+
+bool LaserMapping::AdvanceImuPrediction(const IMUPtr& imu) {
+  if (!p_imu_->IsIMUInited() || !last_prediction_imu_) {
+    return false;
+  }
+  const double dt = imu->timestamp - kf_imu_.GetX().timestamp_;
+  if (dt <= 0) {
+    return false;
+  }
+  const Vec3d gyro =
+      0.5 * (last_prediction_imu_->angular_velocity + imu->angular_velocity);
+  const Vec3d acceleration =
+      0.5 * (last_prediction_imu_->linear_acceleration + imu->linear_acceleration);
+  kf_imu_.Predict(dt, p_imu_->Q_, gyro, acceleration);
+  last_prediction_imu_ = imu;
+  return true;
+}
+
+void LaserMapping::RebuildImuPrediction() {
+  kf_imu_ = kf_;
+  last_prediction_imu_ = p_imu_->GetLastImu();
+  for (const auto& imu : imu_buffer_) {
+    AdvanceImuPrediction(imu);
+  }
+}
+
+bool LaserMapping::IsWheelOdomEnabled() const {
+  return options_.is_in_slam_mode_ && wheel_options_.fusion_enabled;
+}
+
+void LaserMapping::SyncStateAndPrediction(double scan_end_time) {
+  if (scan_end_time <= 0) return;
+  kf_.SetTime(scan_end_time);
+  state_point_ = kf_.GetX();
+  RebuildImuPrediction();
 }
 
 bool LaserMapping::SelectKeyframe() {
@@ -526,29 +591,21 @@ bool LaserMapping::SelectKeyframe() {
     return true;
 }
 
-bool LaserMapping::ProcessPointCloud(const TimedPointCloudData& scan) {
-    if (scan.timestamp_ns <= 0) {
-        LOG(ERROR) << "invalid lidar timestamp: " << scan.timestamp_ns;
+bool LaserMapping::ProcessPointCloud(const TimedPointCloud& scan) {
+    if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0) {
+        LOG(ERROR) << "invalid lidar timestamp: " << scan.timestamp;
         return false;
     }
-
-    CloudPtr cloud(new PointCloudType());
-    if (!preprocess_->Process(scan, cloud) || cloud->empty()) {
-        LOG(WARNING) << "lidar preprocessing failed";
-        return false;
-    }
-    cloud->header.stamp = static_cast<std::uint64_t>(scan.timestamp_ns);
 
     UL lock(mtx_buffer_);
     scan_count_++;
-    const double timestamp = static_cast<double>(scan.timestamp_ns) * 1e-9;
+    const double timestamp = scan.timestamp;
     if (timestamp < last_timestamp_lidar_) {
         LOG(ERROR) << "lidar loop back, dt: " << timestamp - last_timestamp_lidar_;
         return false;
     }
 
-    lidar_buffer_.push_back(cloud);
-    time_buffer_.push_back(timestamp);
+    lidar_buffer_.push_back(scan);
     last_timestamp_lidar_ = timestamp;
     return true;
 }
@@ -561,20 +618,21 @@ bool LaserMapping::SyncPackages() {
 
     /*** push a lidar scan ***/
     if (!lidar_pushed_) {
-        measures_.scan_ = lidar_buffer_.front();
-        measures_.lidar_begin_time_ = time_buffer_.front();
-
+        const auto& scan = lidar_buffer_.front();
+        measures_.scan_ = scan.cloud;
+        measures_.lidar_begin_time_ = scan.timestamp;
         if (measures_.scan_->points.size() <= 1) {
             LOG(WARNING) << "Too few input point cloud!";
             lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
-        } else if (measures_.scan_->points.back().time / double(1000) < 0.5 * lidar_mean_scantime_) {
+        } else if (measures_.scan_->points.back().time < 0.5 * lidar_mean_scantime_) {
             lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
         } else {
             scan_num_++;
-            lidar_end_time_ = measures_.lidar_begin_time_ + measures_.scan_->points.back().time / double(1000);
+            lidar_end_time_ = measures_.lidar_begin_time_ +
+                              measures_.scan_->points.back().time;
 
             lidar_mean_scantime_ +=
-                (measures_.scan_->points.back().time / double(1000) - lidar_mean_scantime_) / scan_num_;
+                (measures_.scan_->points.back().time - lidar_mean_scantime_) / scan_num_;
 
             if ((lidar_end_time_ - measures_.lidar_begin_time_) > 5 * lo::lidar_time_interval) {
                 /// timestamp 有异常
@@ -596,21 +654,22 @@ bool LaserMapping::SyncPackages() {
     }
 
     /*** push imu_ data, and pop from imu_ buffer ***/
-    double imu_time = imu_buffer_.front()->timestamp;
     measures_.imu_.clear();
-    while ((!imu_buffer_.empty()) && (imu_time < lidar_end_time_)) {
-        imu_time = imu_buffer_.front()->timestamp;
-        if (imu_time > lidar_end_time_) {
-            break;
-        }
-
+    while (!imu_buffer_.empty() &&
+           imu_buffer_.front()->timestamp <= lidar_end_time_) {
         measures_.imu_.push_back(imu_buffer_.front());
-
         imu_buffer_.pop_front();
     }
 
+    measures_.odom_.clear();
+    while (!odom_buffer_.empty() &&
+           odom_buffer_.front()->timestamp <= lidar_end_time_) {
+      measures_.odom_.push_back(std::move(odom_buffer_.front()));
+      odom_buffer_.pop_front();
+    }
+    last_synced_odom_time_ = std::max(last_synced_odom_time_, lidar_end_time_);
+
     lidar_buffer_.pop_front();
-    time_buffer_.pop_front();
     lidar_pushed_ = false;
 
     // LOG(INFO) << "sync: " << std::setprecision(14) << measures_.lidar_begin_time_ << ", " <<
@@ -687,13 +746,13 @@ void LaserMapping::MapIncremental() {
  * @param s kf state
  * @param ekfom_data H matrix
  */
-void LaserMapping::ObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
-    int cnt_pts = scan_down_body_->size();
+void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
+  int cnt_pts = scan_down_body_->size();
 
-    std::vector<size_t> index(cnt_pts);
-    for (size_t i = 0; i < index.size(); ++i) {
-        index[i] = i;
-    }
+  std::vector<size_t> index(cnt_pts);
+  for (size_t i = 0; i < index.size(); ++i) {
+    index[i] = i;
+  }
 
     // LOG(INFO) << "obs from state: " << s.pos_.transpose() << ", " << s.rot_.unit_quaternion().coeffs().transpose();
 
@@ -741,7 +800,7 @@ void LaserMapping::ObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
                 }
             });
         },
-        "    ObsModel (Lidar Match)");
+        "    LidarObsModel (Lidar Match)");
 
     effect_feat_surf_ = 0;
     effect_feat_icp_ = 0;
@@ -814,8 +873,8 @@ void LaserMapping::ObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
     });
 
     for (int i = 0; i < index.size(); ++i) {
-        obs.HTH_ += JTJ[i] * options_.plane_icp_weight_;
-        obs.HTr_ += JTr[i] * options_.plane_icp_weight_;
+        obs.HTH_.topLeftCorner<ESKF::pose_obs_dim_, ESKF::pose_obs_dim_>() += JTJ[i] * options_.plane_icp_weight_;
+        obs.HTr_.head<ESKF::pose_obs_dim_>() += JTr[i] * options_.plane_icp_weight_;
     }
 
     if (!res_sq.empty()) {
@@ -870,8 +929,8 @@ void LaserMapping::ObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
             if (point_selected_icp_[i] == false) {
                 continue;
             }
-            obs.HTH_ += JTJ[i] * options_.icp_weight_;
-            obs.HTr_ += JTr[i] * options_.icp_weight_;
+            obs.HTH_.topLeftCorner<ESKF::pose_obs_dim_, ESKF::pose_obs_dim_>() += JTJ[i] * options_.icp_weight_;
+            obs.HTr_.head<ESKF::pose_obs_dim_>() += JTr[i] * options_.icp_weight_;
         }
     }
 }

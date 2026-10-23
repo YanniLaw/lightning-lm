@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <unordered_map>
 #include <utility>
@@ -151,16 +152,6 @@ Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
         AddWorkItem([this, keyframe]() { return HandleKeyframe(keyframe); });
     }
     return keyframe;
-}
-
-LIOInputStatus PoseGraph::AddWheelOdometry(const WheelOdometryData& data) {
-    if (data.timestamp_ns <= 0) {
-        return LIOInputStatus::kInvalidData;
-    }
-    if (!accepting_.load()) {
-        return LIOInputStatus::kNotRunning;
-    }
-    return LIOInputStatus::kUnsupported;
 }
 
 std::vector<KeyframeMapEntry> PoseGraph::GetMapSnapshot() const {

@@ -1,5 +1,6 @@
 #include "core/localization/localization.h"
 
+#include <cmath>
 #include <utility>
 
 #include <yaml-cpp/yaml.h>
@@ -36,11 +37,6 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lio_ = CreateLIO(lio_type);
     if (!lio_) {
         LOG(ERROR) << "failed to create LIO frontend: " << lio_type;
-        return false;
-    }
-    if (!lio_->GetCapabilities().imu_prediction) {
-        LOG(ERROR) << "LIO frontend does not provide IMU prediction required by localization";
-        lio_.reset();
         return false;
     }
 
@@ -118,8 +114,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     return true;
 }
 
-bool Localization::ProcessLidar(const TimedPointCloudData& scan) {
-    if (scan.timestamp_ns <= 0 || scan.points.empty()) {
+bool Localization::ProcessLidar(const TimedPointCloud& scan) {
+    if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0 || !scan.cloud || scan.cloud->empty()) {
         return false;
     }
 

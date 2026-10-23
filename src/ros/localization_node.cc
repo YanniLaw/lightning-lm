@@ -7,29 +7,6 @@
 #include "ros/sensor_bridge.h"
 
 namespace lightning::ros {
-namespace {
-
-bool ReadLidarType(const YAML::Node& yaml, LidarType& type) {
-    const int value = yaml["fasterlio"]["lidar_type"].as<int>();
-    switch (value) {
-        case 1:
-            type = LidarType::AVIA;
-            return true;
-        case 2:
-            type = LidarType::VELO32;
-            return true;
-        case 3:
-            type = LidarType::OUST64;
-            return true;
-        case 4:
-            type = LidarType::ROBOSENSE;
-            return true;
-        default:
-            return false;
-    }
-}
-
-}  // namespace
 
 LocalizationNode::LocalizationNode(const std::string& config_path, const rclcpp::NodeOptions& options)
     : rclcpp::Node("lightning_localization", options), config_path_(config_path) {}
@@ -40,11 +17,7 @@ bool LocalizationNode::Init() {
     YAML::Node yaml;
     try {
         yaml = YAML::LoadFile(config_path_);
-        if (!ReadLidarType(yaml, lidar_type_)) {
-            LOG(ERROR) << "unsupported fasterlio.lidar_type";
-            return false;
-        }
-        velodyne_time_scale_ = yaml["fasterlio"]["time_scale"].as<double>();
+        if (!preprocess_.Init(yaml)) return false;
     } catch (const std::exception& exception) {
         LOG(ERROR) << "failed to read config: " << exception.what();
         return false;
@@ -171,8 +144,8 @@ void LocalizationNode::HandlePointCloud(sensor_msgs::msg::PointCloud2::ConstShar
     if (!system_ || !message) {
         return;
     }
-    TimedPointCloudData scan;
-    if (ToTimedPointCloudData(*message, lidar_type_, velodyne_time_scale_, scan)) {
+    TimedPointCloud scan;
+    if (preprocess_.Process(*message, scan)) {
         system_->ProcessLidar(scan);
     }
 }
@@ -181,8 +154,8 @@ void LocalizationNode::HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstShare
     if (!system_ || !message) {
         return;
     }
-    TimedPointCloudData scan;
-    if (ToTimedPointCloudData(*message, scan)) {
+    TimedPointCloud scan;
+    if (preprocess_.Process(*message, scan)) {
         system_->ProcessLidar(scan);
     }
 }
@@ -202,8 +175,7 @@ void LocalizationNode::Stop() {
     LOG(INFO) << "sensor input stats: imu accepted=" << stats.accepted_imu
               << " processed=" << stats.processed_imu << ", scans accepted=" << stats.accepted_scans
               << " processed=" << stats.processed_scans << ", invalid=" << stats.rejected_invalid
-              << " time_rejected=" << stats.rejected_time << " queue_full=" << stats.rejected_queue_full
-              << " incomplete=" << stats.incomplete_scans;
+              << " time_rejected=" << stats.rejected_time << " queue_full=" << stats.rejected_queue_full;
     tf_broadcaster_.reset();
     visualization_.reset();
     ui_.reset();

@@ -27,6 +27,7 @@ add_library(core SHARED
         common/params.cc
 
         io/yaml_io.cc
+        io/wheel_odometry_options.cc
         io/file_io.cc
 
         core/lio/lio_result_conversion.cc
@@ -34,8 +35,9 @@ add_library(core SHARED
         core/lio/keyframe_selector.cc
         core/lio/scan_accumulator.cc
         core/lio/aa-fasterlio/eskf.cc
+        core/lio/aa-fasterlio/deskew_trajectory.cc
+        core/lio/aa-fasterlio/imu_processing.cc
         core/lio/aa-fasterlio/laser_mapping.cc
-        core/lio/aa-fasterlio/pointcloud_preprocess.cc
         core/pose_graph/keyframe_collection.cc
         core/loop_closing/loop_closing.cc
         core/optimization/miao_optimizer.cc
@@ -79,6 +81,7 @@ target_link_libraries(core
 
 if (LIGHTNING_WITH_ROS)
     add_library(ros_bridge SHARED
+            core/lio/pointcloud_preprocess.cc
             ros/sensor_bridge.cc
             ros/ros_conversions.cc
             ros/ros_visualization.cc

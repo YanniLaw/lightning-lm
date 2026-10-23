@@ -56,8 +56,8 @@ class ESKF {
 
         /// NOTE 我们还是传H^T H 比较好，光传一个H会因为残差维度不对导致没法融合各类残差
         /// 这个只需累加即可
-        Eigen::Matrix<double, pose_obs_dim_, pose_obs_dim_> HTH_;
-        Eigen::Matrix<double, pose_obs_dim_, 1> HTr_;
+        CovType HTH_;
+        StateVecType HTr_;
 
         double lidar_residual_mean_ = 0;
         double lidar_residual_max_ = 0;
@@ -107,7 +107,8 @@ class ESKF {
     void Predict(const double& dt, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce);
 
     /// 自定义模型更新
-    void Update(ObsType obs, const double& R);
+    /// 返回 false 时，状态和协方差保持调用前的值。
+    bool Update(ObsType obs, const double& R);
 
     // accessors
     const NavState& GetX() const { return x_; }

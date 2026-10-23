@@ -59,6 +59,27 @@ visualization_msgs::msg::Marker MakeDeleteMarker(const std::string& marker_names
 
 }  // namespace
 
+std::vector<geometry_msgs::msg::TransformStamped> MakeLIOTransforms(
+    const LIOData& data, const RosVisualization::TfOptions& options) {
+  std::vector<geometry_msgs::msg::TransformStamped> transforms;
+  if (!options.enabled) return transforms;
+  const auto stamped =
+      ToPoseStamped(data.pose * options.imu_from_lidar, data.timestamp);
+  geometry_msgs::msg::TransformStamped message;
+  message.header = stamped.header;
+  // Preserve the legacy TF timestamp conversion, including truncation.
+  message.header.stamp = rclcpp::Time(
+      static_cast<std::int64_t>(data.timestamp * 1e9), RCL_ROS_TIME);
+  message.child_frame_id =
+      options.frame_id.empty() ? "base_link" : options.frame_id;
+  message.transform.translation.x = stamped.pose.position.x;
+  message.transform.translation.y = stamped.pose.position.y;
+  message.transform.translation.z = stamped.pose.position.z;
+  message.transform.rotation = stamped.pose.orientation;
+  transforms.push_back(std::move(message));
+  return transforms;
+}
+
 RosVisualization::RosVisualization(const rclcpp::Node::SharedPtr& node, double local_map_publish_hz,
                                    std::size_t local_map_max_scans)
     : local_map_publish_period_sec_(local_map_publish_hz > 0.0 ? 1.0 / local_map_publish_hz : 0.0),
@@ -82,6 +103,11 @@ RosVisualization::RosVisualization(const rclcpp::Node::SharedPtr& node, double l
     tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node);
     pose_graph_publish_timer_ = node->create_wall_timer(
         std::chrono::milliseconds(100), [this]() { PublishPendingPoseGraph(); });
+}
+
+void RosVisualization::ConfigureTf(const TfOptions& options) {
+  std::lock_guard<std::mutex> lock(tf_mutex_);
+  tf_options_ = options;
 }
 
 void RosVisualization::PublishGridMap(GridMapDataPtr map) {
@@ -267,14 +293,13 @@ void RosVisualization::PublishLIOData(const LIOData& data) {
     }
     lio_path_pub_->publish(lio_path_);
 
-    geometry_msgs::msg::TransformStamped transform;
-    transform.header = pose_msg.header;
-    transform.child_frame_id = "base_link";
-    transform.transform.translation.x = pose_msg.pose.position.x;
-    transform.transform.translation.y = pose_msg.pose.position.y;
-    transform.transform.translation.z = pose_msg.pose.position.z;
-    transform.transform.rotation = pose_msg.pose.orientation;
-    tf_broadcaster_->sendTransform(transform);
+    TfOptions tf_options;
+    {
+      std::lock_guard<std::mutex> lock(tf_mutex_);
+      tf_options = tf_options_;
+    }
+    const auto transforms = MakeLIOTransforms(data, tf_options);
+    if (!transforms.empty()) tf_broadcaster_->sendTransform(transforms);
 
     if (data.registered_cloud) {
         sensor_msgs::msg::PointCloud2 registered_msg;

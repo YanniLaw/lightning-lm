@@ -4,8 +4,8 @@ common:
   lidar_topic: "points_raw"
   livox_lidar_topic: "/livox/lidar"
   imu_topic: "/livox/imu"
-  enable_wheel_odom: true
   wheel_odom_topic: "/odom"
+  lidar_frame: "livox_frame" # TF 发布雷达相对于水平 map 的真实位姿
 
 system:
   with_rviz: true # 是否发布的RViz可视化话题
@@ -13,12 +13,14 @@ system:
   rviz_local_map_max_scans: 200 # RViz累积局部地图最多保留的扫描帧数
   rviz_path_publish_hz: 10.0 # RViz轨迹发布频率
   with_loop_closing: true # 是否需要回环检测
+  with_wheel_odometry_fusion: false # 是否订阅并融合轮速里程计
   with_ui: true # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
   with_g2p5: true # 是否需要栅格地图
   step_on_kf: false # 是否在关键帧处暂停
 
   lio_type: "aa_fasterlio"
+  optimizer_type: "miao"
 
   enable_lidar_loc_skip: false
   enable_lidar_loc_rviz: false
