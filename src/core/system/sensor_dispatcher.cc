@@ -8,14 +8,16 @@
 #include <stdexcept>
 #include <utility>
 
+#include "core/lightning_math.hpp"
+
 namespace lightning::sys {
 namespace {
 
-bool PointCloudBytes(const TimedPointCloud& scan, std::size_t& bytes) {
-    if (scan.cloud->points.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(PointType)) {
+bool PointCloudBytes(const CloudPtr& scan, std::size_t& bytes) {
+    if (scan->points.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(PointType)) {
         return false;
     }
-    bytes = scan.cloud->points.capacity() * sizeof(PointType);
+    bytes = scan->points.capacity() * sizeof(PointType);
     return true;
 }
 
@@ -74,7 +76,7 @@ InputResult SensorDispatcher::AddImu(IMUPtr imu) {
     return InputResult::Accepted;
 }
 
-InputResult SensorDispatcher::AddPointCloud(TimedPointCloud scan) {
+InputResult SensorDispatcher::AddPointCloud(CloudPtr scan) {
     if (!IsValidScan(scan)) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++stats_.rejected_invalid;
@@ -100,7 +102,7 @@ InputResult SensorDispatcher::AddPointCloud(TimedPointCloud scan) {
         return InputResult::QueueFull;
     }
 
-    const double timestamp = scan.timestamp;
+    const double timestamp = math::ToSec(scan->header.stamp);
     if (last_accepted_scan_time_ >= 0 && timestamp < last_accepted_scan_time_) {
         ++stats_.rejected_time;
         return InputResult::TimeDiscontinuity;
@@ -119,16 +121,17 @@ InputResult SensorDispatcher::AddPointCloud(TimedPointCloud scan) {
     return InputResult::Accepted;
 }
 
-InputResult SensorDispatcher::AddWheelOdometry(const Odom& data) {
-  const double time = data.timestamp;
+InputResult SensorDispatcher::AddWheelOdometry(OdomPtr data) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!started_ || stop_requested_) return InputResult::NotRunning;
-  if (!options_.wheel_fusion_enabled || !std::isfinite(time) || time <= 0 ||
-      !data.linear_velocity.allFinite() || !data.angular_velocity.allFinite() ||
+  if (!options_.wheel_fusion_enabled || !data ||
+      !std::isfinite(data->timestamp) || data->timestamp <= 0 ||
+      !data->linear_velocity.allFinite() || !data->angular_velocity.allFinite() ||
       options_.max_wheel_queue_size == 0) {
     ++stats_.invalid_wheel;
     return InputResult::InvalidData;
   }
+  const double time = data->timestamp;
   if (time < last_accepted_wheel_time_) {
     ++stats_.time_rejected_wheel;
     return InputResult::TimeDiscontinuity;
@@ -141,7 +144,7 @@ InputResult SensorDispatcher::AddWheelOdometry(const Odom& data) {
     wheel_queue_.pop_front();
     ++stats_.dropped_wheel;
   }
-  wheel_queue_.push_back(data);
+  wheel_queue_.push_back(std::move(data));
   last_accepted_wheel_time_ = time;
   ++stats_.accepted_wheel;
   condition_.notify_one();
@@ -192,10 +195,9 @@ bool SensorDispatcher::IsValidImu(const IMUPtr& imu) {
     return imu->angular_velocity.allFinite() && imu->linear_acceleration.allFinite();
 }
 
-bool SensorDispatcher::IsValidScan(const TimedPointCloud& scan) {
-  if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0 ||
-      !scan.cloud || scan.cloud->empty()) return false;
-  for (const auto& point : *scan.cloud) {
+bool SensorDispatcher::IsValidScan(const CloudPtr& scan) {
+  if (!scan || scan->header.stamp == 0 || scan->empty()) return false;
+  for (const auto& point : *scan) {
     if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
         !std::isfinite(point.z) || !std::isfinite(point.intensity) ||
         !std::isfinite(point.time)) return false;
@@ -215,8 +217,8 @@ bool SensorDispatcher::SelectTaskLocked(Task& task) {
 
     if (!imu_queue_.empty() &&
         (scan_queue_.empty() || imu_queue_.front()->timestamp <=
-                                    scan_queue_.front().data.timestamp ||
-         last_processed_imu_time_ < scan_queue_.front().data.timestamp)) {
+                                    math::ToSec(scan_queue_.front().data->header.stamp) ||
+         last_processed_imu_time_ < math::ToSec(scan_queue_.front().data->header.stamp))) {
         task.type = TaskType::kImu;
         task.imu = std::move(imu_queue_.front());
         imu_queue_.pop_front();
@@ -225,7 +227,7 @@ bool SensorDispatcher::SelectTaskLocked(Task& task) {
     }
 
     if (!scan_queue_.empty() && last_processed_imu_time_ >=
-                                    scan_queue_.front().data.timestamp) {
+                                    math::ToSec(scan_queue_.front().data->header.stamp)) {
         const PendingScan& scan = scan_queue_.front();
         task.type = TaskType::kScan;
         task.scan = scan.data;
@@ -256,7 +258,7 @@ void SensorDispatcher::Run() {
               return stop_requested_ || !imu_queue_.empty() ||
                      !wheel_queue_.empty() ||
                      (!scan_queue_.empty() && last_processed_imu_time_ >=
-                                                 scan_queue_.front().data.timestamp);
+                                                 math::ToSec(scan_queue_.front().data->header.stamp));
             });
 
             if (stop_requested_ && !drain_on_stop_) {
@@ -280,7 +282,7 @@ void SensorDispatcher::Run() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++stats_.processed_imu;
             } else if (task.type == TaskType::kWheel) {
-              if (wheel_callback_) wheel_callback_(*task.wheel);
+              if (wheel_callback_) wheel_callback_(task.wheel);
               std::lock_guard<std::mutex> lock(mutex_);
               ++stats_.processed_wheel;
             } else if (task.type == TaskType::kScan) {

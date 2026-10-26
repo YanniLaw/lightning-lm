@@ -44,7 +44,7 @@ class LocSystem {
     void ProcessIMU(const lightning::IMUPtr& imu);
 
     /// Process a transport-independent lidar scan.
-    bool ProcessLidar(const TimedPointCloud& cloud);
+    bool ProcessLidar(const CloudPtr& cloud);
 
     using ResultCallback = std::function<void(const loc::LocalizationResult&)>;
     using NavStateCallback = std::function<void(const NavState&)>;
@@ -65,7 +65,7 @@ class LocSystem {
 
    private:
     void ProcessIMUOnWorker(const IMUPtr& imu);
-    bool ProcessLidarOnWorker(const TimedPointCloud& cloud);
+    bool ProcessLidarOnWorker(const CloudPtr& cloud);
 
     Options options_;
 

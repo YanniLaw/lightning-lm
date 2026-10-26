@@ -27,13 +27,7 @@ namespace lightning::ros {
 /// ROS-only visualization consumer for core LIO and pose graph outputs.
 class RosVisualization {
    public:
-    struct TfOptions {
-      bool enabled = true;
-      // Frame name for the physical LiDAR pose.
-      std::string frame_id = "base_link";
-      SE3 imu_from_lidar = SE3();
-    };
-    void ConfigureTf(const TfOptions& options);
+    void SetPublishTf(bool enabled);
     explicit RosVisualization(const rclcpp::Node::SharedPtr& node, double local_map_publish_hz = 2.0,
                               std::size_t local_map_max_scans = 200);
 
@@ -57,7 +51,7 @@ class RosVisualization {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ivox_map_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_pub_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
-    TfOptions tf_options_;
+    bool publish_tf_ = true;
     std::mutex tf_mutex_;
     nav_msgs::msg::Path lio_path_;
     rclcpp::Time last_map_publish_time_{0, 0, RCL_ROS_TIME};
@@ -76,6 +70,6 @@ class RosVisualization {
 };
 
 std::vector<geometry_msgs::msg::TransformStamped> MakeLIOTransforms(
-    const LIOData& data, const RosVisualization::TfOptions& options);
+    const LIOData& data, bool publish_tf);
 
 }  // namespace lightning::ros

@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
         /// lidar 的处理
         .AddPointCloud2Handle(lidar_topic,
                               [&slam, &preprocess](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-                                  TimedPointCloud scan;
+                                  CloudPtr scan;
                                   if (preprocess.Process(*msg, scan)) {
                                       slam.ProcessLidar(scan);
                                   }
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
         /// livox 的处理
         .AddLivoxCloudHandle(livox_topic,
                              [&slam, &preprocess](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-                                 TimedPointCloud scan;
+                                 CloudPtr scan;
                                  if (preprocess.Process(*cloud, scan)) {
                                      slam.ProcessLidar(scan);
                                  }

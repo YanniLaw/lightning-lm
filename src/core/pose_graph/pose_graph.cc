@@ -5,7 +5,6 @@
 #include "core/pose_graph/pose_graph.h"
 
 #include <glog/logging.h>
-#include <pcl/common/transforms.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -117,7 +116,7 @@ bool PoseGraph::Init(const std::string& yaml_path) {
 
 Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
     if (result.update_type != LIOUpdateType::kScanMatched || !result.keyframe_selected || !result.state.pose_is_valid ||
-        !result.cloud || result.cloud->empty() || !result.body_from_lidar.matrix().allFinite()) {
+        !result.cloud || result.cloud->empty()) {
         return nullptr;
     }
 
@@ -141,8 +140,7 @@ Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
             return nullptr;
         }
 
-        auto cloud = std::make_shared<PointCloudType>();
-        pcl::transformPointCloud(*result.cloud, *cloud, result.body_from_lidar.matrix());
+        auto cloud = std::make_shared<PointCloudType>(*result.cloud);
         keyframe = std::make_shared<Keyframe>(static_cast<unsigned long>(next_keyframe_id_++), cloud, state);
         last_accepted_timestamp_ = result.state.timestamp;
 

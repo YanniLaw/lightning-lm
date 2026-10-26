@@ -71,7 +71,7 @@ class SlamSystem {
     void ProcessIMU(const lightning::IMUPtr& imu);
 
     /// Process a transport-independent lidar scan.
-    bool ProcessLidar(const TimedPointCloud& cloud);
+    bool ProcessLidar(const CloudPtr& cloud);
 
     /// Register consumers before starting the system.
     void SetLIODataCallback(std::function<void(const LIOData&)> callback);
@@ -82,7 +82,7 @@ class SlamSystem {
     void SetPoseGraphDataCallback(std::function<void(PoseGraphDataPtr)> callback);
 
     /// Wheel data is accepted as an extension point and is not fused yet.
-    LIOInputStatus ProcessWheelOdometry(const Odom& data);
+    LIOInputStatus ProcessWheelOdometry(const OdomPtr& data);
 
     sys::SensorDispatcher::Stats GetInputStats() const;
 
@@ -91,8 +91,8 @@ class SlamSystem {
 
    private:
     void ProcessIMUOnWorker(const IMUPtr& imu);
-    bool ProcessLidarOnWorker(const TimedPointCloud& cloud);
-    void ProcessWheelOdometryOnWorker(const Odom& data);
+    bool ProcessLidarOnWorker(const CloudPtr& cloud);
+    void ProcessWheelOdometryOnWorker(const OdomPtr& data);
     void HandleLIOPrediction(const LIOState& state);
     void HandleLIOResult(const LIOResult& result);
 

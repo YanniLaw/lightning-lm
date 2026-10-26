@@ -152,9 +152,16 @@ For normal wheel motion on indoor floors, enable `system.with_wheel_odometry_fus
 `common.wheel_odom_topic`. The mapping frontend uses encoder forward speed together with soft lateral and vertical
 zero-velocity constraints at the wheel center through the existing `WHEEL_SPEED` observation callback.
 
-Configure `wheel_odometry.extrinsic_R/T` as the lidar pose in the wheel-center frame. The frontend combines its rigid
-inverse with `fasterlio.extrinsic_R/T` to obtain the wheel-to-IMU transform; it does not query TF or infer axes from message
-frame names. Message covariance is ignored.
+Configure `wheel_odometry.extrinsic_R/T` as the lidar pose in the wheel-center frame. Its rigid inverse is combined with
+`fasterlio.extrinsic_R/T` to obtain the wheel-to-IMU transform. The ROS adapter expresses wheel velocity in the actual
+IMU axes; the measurement remains at the wheel center, with gyro-based lever-arm compensation in the frontend.
+Message covariance is ignored. No TF lookup or inference from message frame names is used.
+
+LiDAR preprocessing converts points to the actual IMU frame before dispatch. All local clouds used by LIO, loop closing
+and localization share this frame. Point clouds travel as `CloudPtr`, with scan start stored in the PCL header in
+microseconds; point offsets and algorithm time calculations remain in seconds. Wheel samples travel as `OdomPtr`,
+with `wheel_time_offset` applied once at the ROS boundary. RViz publishes `map` → `imu_frame` directly from the IMU pose;
+world clouds remain in `map`.
 
 The three fixed variances are `default_velocity_variance` (forward, default `0.01`), `nhc_lateral_variance` (default `0.01`)
 and `nhc_vertical_variance` (default `0.04`), all in `(m/s)^2`. Smaller values give stronger constraints. The existing

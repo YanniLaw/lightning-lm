@@ -40,7 +40,7 @@ bool ReadExtrinsic(const YAML::Node& node, WheelOdometryOptions* options,
   }
   Eigen::Quaterniond quaternion(r);
   const SE3 wheel_from_lidar(quaternion.normalized(), t);
-  options->configured_lidar_from_wheel = wheel_from_lidar.inverse();
+  options->lidar_from_wheel = wheel_from_lidar.inverse();
   return true;
 }
 

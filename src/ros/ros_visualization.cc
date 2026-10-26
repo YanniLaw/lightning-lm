@@ -60,18 +60,17 @@ visualization_msgs::msg::Marker MakeDeleteMarker(const std::string& marker_names
 }  // namespace
 
 std::vector<geometry_msgs::msg::TransformStamped> MakeLIOTransforms(
-    const LIOData& data, const RosVisualization::TfOptions& options) {
+    const LIOData& data, bool publish_tf) {
   std::vector<geometry_msgs::msg::TransformStamped> transforms;
-  if (!options.enabled) return transforms;
+  if (!publish_tf) return transforms;
   const auto stamped =
-      ToPoseStamped(data.pose * options.imu_from_lidar, data.timestamp);
+      ToPoseStamped(data.pose, data.timestamp);
   geometry_msgs::msg::TransformStamped message;
   message.header = stamped.header;
   // Preserve the legacy TF timestamp conversion, including truncation.
   message.header.stamp = rclcpp::Time(
       static_cast<std::int64_t>(data.timestamp * 1e9), RCL_ROS_TIME);
-  message.child_frame_id =
-      options.frame_id.empty() ? "base_link" : options.frame_id;
+  message.child_frame_id = "imu_frame";
   message.transform.translation.x = stamped.pose.position.x;
   message.transform.translation.y = stamped.pose.position.y;
   message.transform.translation.z = stamped.pose.position.z;
@@ -105,9 +104,9 @@ RosVisualization::RosVisualization(const rclcpp::Node::SharedPtr& node, double l
         std::chrono::milliseconds(100), [this]() { PublishPendingPoseGraph(); });
 }
 
-void RosVisualization::ConfigureTf(const TfOptions& options) {
+void RosVisualization::SetPublishTf(bool enabled) {
   std::lock_guard<std::mutex> lock(tf_mutex_);
-  tf_options_ = options;
+  publish_tf_ = enabled;
 }
 
 void RosVisualization::PublishGridMap(GridMapDataPtr map) {
@@ -293,12 +292,12 @@ void RosVisualization::PublishLIOData(const LIOData& data) {
     }
     lio_path_pub_->publish(lio_path_);
 
-    TfOptions tf_options;
+    bool publish_tf;
     {
       std::lock_guard<std::mutex> lock(tf_mutex_);
-      tf_options = tf_options_;
+      publish_tf = publish_tf_;
     }
-    const auto transforms = MakeLIOTransforms(data, tf_options);
+    const auto transforms = MakeLIOTransforms(data, publish_tf);
     if (!transforms.empty()) tf_broadcaster_->sendTransform(transforms);
 
     if (data.registered_cloud) {

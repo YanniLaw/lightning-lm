@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
                       })
         .AddPointCloud2Handle(lidar_topic,
                               [&loc, &preprocess](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                                  TimedPointCloud scan;
+                                  CloudPtr scan;
                                   if (preprocess.Process(*cloud, scan)) {
                                       loc.ProcessLidar(scan);
                                   }
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
                               })
         .AddLivoxCloudHandle(livox_topic,
                              [&loc, &preprocess](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-                                 TimedPointCloud scan;
+                                 CloudPtr scan;
                                  if (preprocess.Process(*cloud, scan)) {
                                      loc.ProcessLidar(scan);
                                  }

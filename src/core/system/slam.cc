@@ -35,8 +35,8 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     sensor_dispatcher_ = std::make_unique<sys::SensorDispatcher>(
         dispatcher_options,
         [this](const IMUPtr& imu) { ProcessIMUOnWorker(imu); },
-        [this](const TimedPointCloud& scan) { ProcessLidarOnWorker(scan); },
-        [this](const Odom& data) {
+        [this](const CloudPtr& scan) { ProcessLidarOnWorker(scan); },
+        [this](const OdomPtr& data) {
           ProcessWheelOdometryOnWorker(data);
         });
     std::string lio_type = "aa_fasterlio";
@@ -243,7 +243,7 @@ void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
     }
 }
 
-bool SlamSystem::ProcessLidar(const TimedPointCloud& cloud) {
+bool SlamSystem::ProcessLidar(const CloudPtr& cloud) {
     if (!running_ || !lio_) {
         return false;
     }
@@ -266,7 +266,7 @@ void SlamSystem::ProcessIMUOnWorker(const IMUPtr& imu) {
     lio_->AddImu(imu);
 }
 
-bool SlamSystem::ProcessLidarOnWorker(const TimedPointCloud& cloud) {
+bool SlamSystem::ProcessLidarOnWorker(const CloudPtr& cloud) {
     if (!lio_) {
         return false;
     }
@@ -312,19 +312,17 @@ void SlamSystem::HandleLIOResult(const LIOResult& result) {
     }
 }
 
-LIOInputStatus SlamSystem::ProcessWheelOdometry(const Odom& data) {
+LIOInputStatus SlamSystem::ProcessWheelOdometry(const OdomPtr& data) {
     if (!running_ || !lio_) {
         return LIOInputStatus::kNotRunning;
     }
     if (!wheel_options_.fusion_enabled)
       return LIOInputStatus::kUnsupported;
-    Odom timed = data;
-    timed.timestamp += wheel_options_.wheel_time_offset;
-    if (!std::isfinite(timed.timestamp) || timed.timestamp <= 0.0)
+    if (!data || !std::isfinite(data->timestamp) || data->timestamp <= 0.0)
       return LIOInputStatus::kInvalidData;
     if (!options_.online_mode_ || !sensor_dispatcher_)
-      return lio_->AddWheelOdometry(timed);
-    switch (sensor_dispatcher_->AddWheelOdometry(timed)) {
+      return lio_->AddWheelOdometry(data);
+    switch (sensor_dispatcher_->AddWheelOdometry(data)) {
       case InputResult::Accepted:
         return LIOInputStatus::kAccepted;
       case InputResult::NotRunning:
@@ -336,7 +334,7 @@ LIOInputStatus SlamSystem::ProcessWheelOdometry(const Odom& data) {
     }
 }
 
-void SlamSystem::ProcessWheelOdometryOnWorker(const Odom& data) {
+void SlamSystem::ProcessWheelOdometryOnWorker(const OdomPtr& data) {
   if (lio_) lio_->AddWheelOdometry(data);
 }
 

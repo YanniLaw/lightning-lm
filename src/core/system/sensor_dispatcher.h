@@ -6,7 +6,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <thread>
 
 #include "common/imu.h"
@@ -58,8 +57,8 @@ class SensorDispatcher final {
     };
 
     using ImuCallback = std::function<void(const IMUPtr&)>;
-    using ScanCallback = std::function<void(const TimedPointCloud&)>;
-    using WheelCallback = std::function<void(const Odom&)>;
+    using ScanCallback = std::function<void(const CloudPtr&)>;
+    using WheelCallback = std::function<void(const OdomPtr&)>;
 
     SensorDispatcher(Options options, ImuCallback imu_callback,
                      ScanCallback scan_callback,
@@ -76,8 +75,8 @@ class SensorDispatcher final {
     InputResult AddImu(IMUPtr imu);
 
     /// Add a shared scan without copying its point array.
-    InputResult AddPointCloud(TimedPointCloud scan);
-    InputResult AddWheelOdometry(const Odom& data);
+    InputResult AddPointCloud(CloudPtr scan);
+    InputResult AddWheelOdometry(OdomPtr data);
 
     /// Stop accepting input and wait for the worker according to mode.
     /// Drain drops scans without a starting IMU; LIO waits for scan-tail IMU.
@@ -90,7 +89,7 @@ class SensorDispatcher final {
 
    private:
     struct PendingScan {
-        TimedPointCloud data;
+        CloudPtr data;
         std::size_t bytes = 0;
     };
 
@@ -104,12 +103,12 @@ class SensorDispatcher final {
     struct Task {
         TaskType type = TaskType::kNone;
         IMUPtr imu;
-        TimedPointCloud scan;
-        std::optional<Odom> wheel;
+        CloudPtr scan;
+        OdomPtr wheel;
     };
 
     static bool IsValidImu(const IMUPtr& imu);
-    static bool IsValidScan(const TimedPointCloud& scan);
+    static bool IsValidScan(const CloudPtr& scan);
 
     bool SelectTaskLocked(Task& task);
     void CancelQueuedWorkLocked();
@@ -124,7 +123,7 @@ class SensorDispatcher final {
     std::condition_variable condition_;
     std::deque<IMUPtr> imu_queue_;
     std::deque<PendingScan> scan_queue_;
-    std::deque<Odom> wheel_queue_;
+    std::deque<OdomPtr> wheel_queue_;
     std::size_t queued_point_cloud_bytes_ = 0;
 
     bool started_ = false;

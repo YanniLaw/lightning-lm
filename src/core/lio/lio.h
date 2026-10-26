@@ -46,8 +46,10 @@ class LIO {
     virtual void SetDataCallback(DataCallback callback) = 0;
 
     virtual LIOInputStatus AddImu(const IMUPtr& imu) = 0;
-    virtual LIOInputStatus AddPointCloud(const TimedPointCloud& scan) = 0;
-    virtual LIOInputStatus AddWheelOdometry(const Odom& data) = 0;
+    // Points are in the actual IMU frame; header.stamp is scan start in us.
+    // After submission the caller must not modify the cloud; LIO is its writer.
+    virtual LIOInputStatus AddPointCloud(const CloudPtr& scan) = 0;
+    virtual LIOInputStatus AddWheelOdometry(const OdomPtr& data) = 0;
 
     virtual void Stop() = 0;
 };

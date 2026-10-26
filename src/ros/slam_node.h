@@ -39,6 +39,7 @@ class SlamNode final : public rclcpp::Node {
     std::string config_path_;
     PointCloudPreprocess preprocess_;
     WheelOdometryOptions wheel_options_;
+    SE3 imu_from_wheel_;
     std::mutex wheel_input_mutex_;
     std::atomic_bool stopping_ = false;
     std::shared_ptr<SlamSystem> system_;

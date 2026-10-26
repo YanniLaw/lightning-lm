@@ -144,7 +144,7 @@ void LocalizationNode::HandlePointCloud(sensor_msgs::msg::PointCloud2::ConstShar
     if (!system_ || !message) {
         return;
     }
-    TimedPointCloud scan;
+    CloudPtr scan;
     if (preprocess_.Process(*message, scan)) {
         system_->ProcessLidar(scan);
     }
@@ -154,7 +154,7 @@ void LocalizationNode::HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstShare
     if (!system_ || !message) {
         return;
     }
-    TimedPointCloud scan;
+    CloudPtr scan;
     if (preprocess_.Process(*message, scan)) {
         system_->ProcessLidar(scan);
     }

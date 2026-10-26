@@ -2,11 +2,13 @@
 #include <execution>
 
 #include <glog/logging.h>
+#include <pcl/common/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <cmath>
 #include <vector>
 
+#include "core/lightning_math.hpp"
 #include "wrapper/ros_utils.h"
 
 namespace lightning {
@@ -14,6 +16,14 @@ namespace lightning {
 bool PointCloudPreprocess::Init(const YAML::Node &yaml) {
     try {
         const auto node = yaml["fasterlio"];
+        const auto translation = node["extrinsic_T"].as<std::vector<double>>();
+        const auto rotation = node["extrinsic_R"].as<std::vector<double>>();
+        if (translation.size() != 3 || rotation.size() != 9) {
+            LOG(ERROR) << "fasterlio extrinsic_T/R must contain 3/9 values";
+            return false;
+        }
+        imu_from_lidar_ = SE3(SO3(math::MatFromArray<double>(rotation)),
+                             math::VecFromArray<double>(translation));
         const int type = node["lidar_type"].as<int>();
         if (type < 1 || type > 4) {
             LOG(ERROR) << "Unsupported fasterlio.lidar_type: " << type;
@@ -40,7 +50,7 @@ bool PointCloudPreprocess::Init(const YAML::Node &yaml) {
     return true;
 }
 
-bool PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 &msg, TimedPointCloud &output) {
+bool PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 &msg, CloudPtr &output) {
     switch (lidar_type_) {
         case LidarType::OUST64:
             Oust64Handler(msg);
@@ -58,21 +68,23 @@ bool PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 &msg, Tim
             LOG(ERROR) << "Error LiDAR Type";
             return false;
     }
-    output.timestamp = ToSec(msg.header.stamp);
-    output.cloud = std::make_shared<PointCloudType>(cloud_out_);
-    pcl_conversions::toPCL(msg.header, output.cloud->header);
-    return !output.cloud->empty();
+    output = std::make_shared<PointCloudType>(cloud_out_);
+    pcl_conversions::toPCL(msg.header, output->header);
+    pcl::transformPointCloud(*output, *output, imu_from_lidar_.matrix());
+    output->header.frame_id = "imu_frame";
+    return !output->empty();
 }
 
-bool PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg &msg, TimedPointCloud &output) {
+bool PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg &msg, CloudPtr &output) {
     if (lidar_type_ != LidarType::AVIA || msg.point_num < 2 || msg.point_num > msg.points.size()) {
         return false;
     }
     HandleLivox(msg);
-    output.timestamp = ToSec(msg.header.stamp);
-    output.cloud = std::make_shared<PointCloudType>(cloud_out_);
-    pcl_conversions::toPCL(msg.header, output.cloud->header);
-    return !output.cloud->empty();
+    output = std::make_shared<PointCloudType>(cloud_out_);
+    pcl_conversions::toPCL(msg.header, output->header);
+    pcl::transformPointCloud(*output, *output, imu_from_lidar_.matrix());
+    output->header.frame_id = "imu_frame";
+    return !output->empty();
 }
 
 void PointCloudPreprocess::HandleLivox(const livox_ros_driver2::msg::CustomMsg &msg) {

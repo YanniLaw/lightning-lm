@@ -11,8 +11,9 @@ namespace lightning::ros {
 /// Convert a ROS IMU message into an algorithm-owned value.
 bool ToImuData(const sensor_msgs::msg::Imu& message, IMUPtr& output);
 
-/// Convert a wheel-encoder odometry message without applying frame transforms
-/// or feeding it into an estimator. Message covariance is ignored.
-bool ToOdom(const nav_msgs::msg::Odometry& message, Odom& output);
+// Express wheel-center velocity in IMU axes and correct time before sharing.
+// imu_from_wheel maps the wheel frame into the actual IMU frame (T_IB).
+bool ToOdom(const nav_msgs::msg::Odometry& message,
+            const SE3& imu_from_wheel, double time_offset, OdomPtr& output);
 
 }  // namespace lightning::ros

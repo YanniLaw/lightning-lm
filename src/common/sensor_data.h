@@ -11,15 +11,6 @@ enum class LidarType {
     ROBOSENSE = 4,
 };
 
-// Preprocessed cloud and scan start time. After submission only the LIO worker
-// may modify cloud; copying this packet never copies the point array.
-struct TimedPointCloud {
-  double timestamp = 0.0;  // Seconds.
-  CloudPtr cloud;
-};
-
-using TimedPointCloudPtr = std::shared_ptr<TimedPointCloud>;
-
 enum class InputResult {
     Accepted,
     NotRunning,

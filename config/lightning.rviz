@@ -232,7 +232,7 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        base_link:
+        imu_frame:
           Value: true
         map:
           Value: true
@@ -243,7 +243,7 @@ Visualization Manager:
       Show Names: true
       Tree:
         map:
-          base_link:
+          imu_frame:
             {}
       Update Interval: 0
       Value: true

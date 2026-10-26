@@ -45,7 +45,6 @@ class ScanAccumulator {
    private:
     struct Entry {
         LIOState state;
-        SE3 body_from_lidar = SE3();
         std::shared_ptr<const PointCloudType> cloud;
     };
 

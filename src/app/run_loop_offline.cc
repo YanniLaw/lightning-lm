@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
         .AddPointCloud2Handle("points_raw",
                               [&lio, &preprocess](
                                   sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                                  TimedPointCloud scan;
+                                  CloudPtr scan;
                                   if (!preprocess.Process(*cloud, scan)) {
                                       return true;
                                   }

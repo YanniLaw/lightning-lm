@@ -5,7 +5,6 @@ common:
   livox_lidar_topic: "/livox/lidar"
   imu_topic: "/livox/imu"
   wheel_odom_topic: "/odom"
-  lidar_frame: "livox_frame" # TF 发布雷达相对于水平 map 的真实位姿
 
 wheel_odometry:
   # 雷达在轮心系中的位姿：p_B = R * p_L + T；B=center_of_rotation_link。
@@ -88,8 +87,8 @@ g2p5:
   lidar_height: 0.0   # 雷达安装高度 default 0.0 
   floor_height: -0.21   # 默认地面高度 default -1.2
   min_th_floor: 0.20  # 距离地面这个高度的障碍物被扫入栅格地图中
-  max_th_floor: 1.0  # 距离地面这个高度的障碍物被扫入栅格地图中
-  grid_map_resolution: 0.2 # 栅格地图分辨率
+  max_th_floor: 0.5  # 距离地面这个高度的障碍物被扫入栅格地图中
+  grid_map_resolution: 0.1 # 栅格地图分辨率
 
 loop_closing:
   loop_kf_gap: 20       # 兼容旧配置；检测间隔请使用 detection_interval

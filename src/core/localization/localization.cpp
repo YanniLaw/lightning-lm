@@ -114,8 +114,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     return true;
 }
 
-bool Localization::ProcessLidar(const TimedPointCloud& scan) {
-    if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0 || !scan.cloud || scan.cloud->empty()) {
+bool Localization::ProcessLidar(const CloudPtr& scan) {
+    if (!scan || scan->header.stamp == 0 || scan->empty()) {
         return false;
     }
 
@@ -180,7 +180,7 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     pgo_->ProcessLidarLoc(res);
 
     if (scan_callback_) {
-        // Twi with Til, here pose means Twl, thus Til=I.
+        // The cloud is in the actual IMU frame; pose is T_WI.
         scan_callback_(scan_undist, res.pose_);
     }
 

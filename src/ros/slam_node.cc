@@ -5,9 +5,7 @@
 
 #include <mutex>
 #include <utility>
-#include <vector>
 
-#include "core/lightning_math.hpp"
 #include "io/wheel_odometry_options.h"
 #include "lightning/srv/save_map.hpp"
 #include "ros/ros_visualization.h"
@@ -23,8 +21,6 @@ SlamNode::~SlamNode() { Stop(); }
 bool SlamNode::Init() {
     YAML::Node yaml;
     bool publish_tf = true;
-    std::string lidar_frame;
-    SE3 imu_from_lidar;
     try {
         yaml = YAML::LoadFile(config_path_);
         if (!preprocess_.Init(yaml)) return false;
@@ -33,24 +29,12 @@ bool SlamNode::Init() {
           LOG(ERROR) << error;
           return false;
         }
-        if (yaml["common"]["lidar_frame"]) {
-          lidar_frame = yaml["common"]["lidar_frame"].as<std::string>();
+        if (wheel_options_.fusion_enabled) {
+          imu_from_wheel_ = preprocess_.GetImuFromLidar() *
+                            wheel_options_.lidar_from_wheel;
         }
         if (yaml["system"]["pub_tf"]) {
           publish_tf = yaml["system"]["pub_tf"].as<bool>();
-        }
-        if (!lidar_frame.empty()) {
-            const auto translation =
-                yaml["fasterlio"]["extrinsic_T"].as<std::vector<double>>();
-            const auto rotation =
-                yaml["fasterlio"]["extrinsic_R"].as<std::vector<double>>();
-            if (translation.size() != 3 || rotation.size() != 9) {
-                LOG(ERROR) << "fasterlio extrinsic_T/R must contain 3/9 values";
-                return false;
-            }
-            imu_from_lidar =
-                SE3(SO3(math::MatFromArray<double>(rotation)),
-                    math::VecFromArray<double>(translation));
         }
     } catch (const std::exception& exception) {
         LOG(ERROR) << "failed to read config: " << exception.what();
@@ -103,7 +87,7 @@ bool SlamNode::Init() {
                                           ? yaml["system"]["rviz_local_map_max_scans"].as<std::size_t>()
                                           : 200;
         visualization_ = std::make_shared<RosVisualization>(shared_from_this(), publish_hz, max_scans);
-        visualization_->ConfigureTf({publish_tf, lidar_frame, imu_from_lidar});
+        visualization_->SetPublishTf(publish_tf);
         system_->SetLIODataCallback([this](const LIOData& data) {
             if (visualization_) {
                 visualization_->PublishLIOData(data);
@@ -178,7 +162,7 @@ void SlamNode::HandlePointCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr me
   if (stopping_.load() || !system_ || !message) {
     return;
   }
-    TimedPointCloud scan;
+    CloudPtr scan;
     if (preprocess_.Process(*message, scan)) {
       system_->ProcessLidar(scan);
     }
@@ -188,7 +172,7 @@ void SlamNode::HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr mes
   if (stopping_.load() || !system_ || !message) {
     return;
   }
-    TimedPointCloud scan;
+    CloudPtr scan;
     if (preprocess_.Process(*message, scan)) {
       system_->ProcessLidar(scan);
     }
@@ -200,8 +184,8 @@ void SlamNode::HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr messa
     return;
   }
 
-  Odom data;
-  if (!ToOdom(*message, data)) {
+  OdomPtr data;
+  if (!ToOdom(*message, imu_from_wheel_, wheel_options_.wheel_time_offset, data)) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                          "Reject invalid wheel odometry");
     return;

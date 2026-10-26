@@ -40,10 +40,9 @@ bool IsFinite(const IMUPtr& imu) {
            imu->angular_velocity.allFinite() && imu->linear_acceleration.allFinite();
 }
 
-bool IsFinite(const TimedPointCloud& scan) {
-  if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0 ||
-      !scan.cloud || scan.cloud->empty()) return false;
-  for (const auto& point : *scan.cloud) {
+bool IsFinite(const CloudPtr& scan) {
+  if (!scan || scan->header.stamp == 0 || scan->empty()) return false;
+  for (const auto& point : *scan) {
     if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
         !std::isfinite(point.z) || !std::isfinite(point.intensity) ||
         !std::isfinite(point.time)) return false;
@@ -74,7 +73,7 @@ bool LaserMapping::Init(const std::string& config_yaml) {
     if (IsWheelOdomEnabled()) {
       const SE3 imu_from_lidar(SO3(offset_R_lidar_fixed_), offset_t_lidar_fixed_);
       p_imu_->ConfigureWheelSpeedObservation(
-          imu_from_lidar * wheel_options_.configured_lidar_from_wheel.value(),
+          imu_from_lidar * wheel_options_.lidar_from_wheel,
           Vec3d(wheel_options_.default_velocity_variance,
                 wheel_options_.nhc_lateral_variance,
                 wheel_options_.nhc_vertical_variance));
@@ -176,7 +175,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     offset_t_lidar_fixed_ = math::VecFromArray<double>(extrinT_);
     offset_R_lidar_fixed_ = math::MatFromArray<double>(extrinR_);
 
-    p_imu_->SetExtrinsic(offset_t_lidar_fixed_, offset_R_lidar_fixed_);
     p_imu_->SetGyrCov(Vec3d(gyr_cov, gyr_cov, gyr_cov));
     p_imu_->SetAccCov(Vec3d(acc_cov, acc_cov, acc_cov));
     p_imu_->SetGyrBiasCov(Vec3d(b_gyr_cov, b_gyr_cov, b_gyr_cov));
@@ -208,7 +206,7 @@ LIOInputStatus LaserMapping::AddImu(const IMUPtr& imu) {
     return LIOInputStatus::kAccepted;
 }
 
-LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloud& scan) {
+LIOInputStatus LaserMapping::AddPointCloud(const CloudPtr& scan) {
     if (!running_.load()) {
         return LIOInputStatus::kNotRunning;
     }
@@ -216,7 +214,7 @@ LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloud& scan) {
         return LIOInputStatus::kInvalidData;
     }
 
-    const double timestamp = scan.timestamp;
+    const double timestamp = math::ToSec(scan->header.stamp);
     if (timestamp < last_timestamp_lidar_) {
         return LIOInputStatus::kTimeDiscontinuity;
     }
@@ -228,16 +226,17 @@ LIOInputStatus LaserMapping::AddPointCloud(const TimedPointCloud& scan) {
     return LIOInputStatus::kAccepted;
 }
 
-LIOInputStatus LaserMapping::AddWheelOdometry(const Odom& data) {
+LIOInputStatus LaserMapping::AddWheelOdometry(const OdomPtr& data) {
   if (!running_.load()) {
     return LIOInputStatus::kNotRunning;
   }
   if (!IsWheelOdomEnabled()) {
     return LIOInputStatus::kUnsupported;
   }
-  const double time = data.timestamp;
+  if (!data) return LIOInputStatus::kInvalidData;
+  const double time = data->timestamp;
   if (!std::isfinite(time) || time <= 0.0 ||
-      !data.linear_velocity.allFinite() || !data.angular_velocity.allFinite()) {
+      !data->linear_velocity.allFinite() || !data->angular_velocity.allFinite()) {
     return LIOInputStatus::kInvalidData;
   }
   if (time <= last_synced_odom_time_ || time < last_timestamp_odom_) {
@@ -250,7 +249,7 @@ LIOInputStatus LaserMapping::AddWheelOdometry(const Odom& data) {
   if (odom_buffer_.size() >= kWheelQueueSize) {
     odom_buffer_.pop_front();
   }
-  odom_buffer_.push_back(std::make_shared<Odom>(data));
+  odom_buffer_.push_back(data);
   return LIOInputStatus::kAccepted;
 }
 
@@ -317,7 +316,7 @@ void LaserMapping::NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double 
         PointType& registered_point = registered_cloud->points[index];
         registered_point = cloud->points[index];
         const Vec3d point_in_map =
-            pose.so3() * (offset_R_lidar_fixed_ * ToVec3d(cloud->points[index]) + offset_t_lidar_fixed_) + pose.translation();
+            pose * ToVec3d(cloud->points[index]);
         registered_point.x = point_in_map.x();
         registered_point.y = point_in_map.y();
         registered_point.z = point_in_map.z();
@@ -352,7 +351,6 @@ void LaserMapping::NotifyResult(const NavState& state,
     const CloudPtr& display_source =
         update_type == LIOUpdateType::kScanMatched ? scan_down_body_ : scan_undistort_;
     result.display_cloud = CopyCloud(display_source);
-    result.body_from_lidar = SE3(SO3(offset_R_lidar_fixed_), offset_t_lidar_fixed_);
     if (update_type == LIOUpdateType::kScanMatched) {
         result.projected_cloud = scan_accumulator_.BuildProjectedCloud(result);
     } else {
@@ -584,22 +582,21 @@ bool LaserMapping::SelectKeyframe() {
     LIOResult selected_result;
     selected_result.state = ToLIOState(state_point_);
     selected_result.cloud = CopyCloud(scan_undistort_);
-    selected_result.body_from_lidar = SE3(SO3(offset_R_lidar_fixed_), offset_t_lidar_fixed_);
     selected_result.keyframe_selected = true;
     scan_accumulator_.AddSelected(selected_result);
 
     return true;
 }
 
-bool LaserMapping::ProcessPointCloud(const TimedPointCloud& scan) {
-    if (!std::isfinite(scan.timestamp) || scan.timestamp <= 0.0) {
-        LOG(ERROR) << "invalid lidar timestamp: " << scan.timestamp;
+bool LaserMapping::ProcessPointCloud(const CloudPtr& scan) {
+    const double timestamp = math::ToSec(scan->header.stamp);
+    if (timestamp <= 0.0) {
+        LOG(ERROR) << "invalid lidar timestamp: " << timestamp;
         return false;
     }
 
     UL lock(mtx_buffer_);
     scan_count_++;
-    const double timestamp = scan.timestamp;
     if (timestamp < last_timestamp_lidar_) {
         LOG(ERROR) << "lidar loop back, dt: " << timestamp - last_timestamp_lidar_;
         return false;
@@ -619,8 +616,8 @@ bool LaserMapping::SyncPackages() {
     /*** push a lidar scan ***/
     if (!lidar_pushed_) {
         const auto& scan = lidar_buffer_.front();
-        measures_.scan_ = scan.cloud;
-        measures_.lidar_begin_time_ = scan.timestamp;
+        measures_.scan_ = scan;
+        measures_.lidar_begin_time_ = math::ToSec(scan->header.stamp);
         if (measures_.scan_->points.size() <= 1) {
             LOG(WARNING) << "Too few input point cloud!";
             lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
@@ -758,8 +755,8 @@ void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs)
 
     Timer::Evaluate(
         [&, this]() {
-            Mat3f R_wl = (s.rot_.matrix() * offset_R_lidar_fixed_).cast<float>();
-            Vec3f t_wl = (s.rot_ * offset_t_lidar_fixed_ + s.pos_).cast<float>();
+            Mat3f R_wi = s.rot_.matrix().cast<float>();
+            Vec3f t_wi = s.pos_.cast<float>();
 
             std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
                 PointType &point_body = scan_down_body_->points[i];
@@ -767,7 +764,7 @@ void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs)
 
                 /* transform to world frame */
                 Vec3f p_body = point_body.getVector3fMap();
-                point_world.getVector3fMap() = R_wl * p_body + t_wl;
+                point_world.getVector3fMap() = R_wi * p_body + t_wi;
                 point_world.intensity = point_body.intensity;
 
                 auto &points_near = nearest_points_[i];
@@ -791,7 +788,7 @@ void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs)
                     temp[3] = 1.0;
                     float pd2 = plane_coef_[i].dot(temp);
 
-                    if (p_body.norm() > 81 * pd2 * pd2) {
+                    if ((p_body - offset_t_lidar_fixed_.cast<float>()).norm() > 81 * pd2 * pd2) {
                         point_selected_surf_[i] = true;
                         residuals_[i] = pd2;
                     } else {
@@ -832,8 +829,6 @@ void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs)
     }
 
     index.resize(effect_feat_surf_);
-    const Mat3f off_R = offset_R_lidar_fixed_.cast<float>();
-    const Vec3f off_t = offset_t_lidar_fixed_.cast<float>();
     const Mat3f Rt = s.rot_.matrix().transpose().cast<float>();
 
     /// 点面ICP部分
@@ -846,8 +841,7 @@ void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs)
     std::vector<double> res_sq(index.size());
 
     std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
-        Vec3f point_this_be = corr_pts_[i].head<3>();
-        Vec3f point_this = off_R * point_this_be + off_t;
+        Vec3f point_this = corr_pts_[i].head<3>();
         Mat3f point_crossmat = math::SKEW_SYM_MATRIX(point_this);
 
         /*** get the normal vector of closest surface/corner ***/
@@ -901,7 +895,6 @@ void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs)
                 return;
             }
 
-            /// TODO: 外参
             Vec3d q = scan_down_body_->points[i].getVector3fMap().cast<double>();
             Vec3d qs = scan_down_world_->points[i].getVector3fMap().cast<double>();
 
@@ -912,7 +905,7 @@ void LaserMapping::LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs)
             J.block<3, 3>(0, 0) = Mat3d::Identity();
 
             /// rotation 部分
-            J.block<3, 3>(0, 3) = -(s.rot_.matrix() * offset_R_lidar_fixed_) * SO3::hat(q);
+            J.block<3, 3>(0, 3) = -s.rot_.matrix() * SO3::hat(q);
 
             Vec3d e = qs - nearest_points_[i][0].getVector3fMap().cast<double>();
 

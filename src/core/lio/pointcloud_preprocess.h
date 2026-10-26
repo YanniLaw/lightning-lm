@@ -9,7 +9,7 @@
 
 namespace lightning {
 
-// 预处理程序：统一各雷达的点格式和逐点时间。
+// 预处理程序：统一各雷达的点格式、逐点时间和真实 IMU 坐标系。
 class PointCloudPreprocess {
    public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -18,9 +18,10 @@ class PointCloudPreprocess {
     ~PointCloudPreprocess() = default;
 
     bool Init(const YAML::Node &yaml);
+    const SE3& GetImuFromLidar() const { return imu_from_lidar_; }
     /// processors
-    bool Process(const sensor_msgs::msg::PointCloud2 &msg, TimedPointCloud &output);
-    bool Process(const livox_ros_driver2::msg::CustomMsg &msg, TimedPointCloud &output);
+    bool Process(const sensor_msgs::msg::PointCloud2 &msg, CloudPtr &output);
+    bool Process(const livox_ros_driver2::msg::CustomMsg &msg, CloudPtr &output);
 
    private:
     void HandleLivox(const livox_ros_driver2::msg::CustomMsg &msg);
@@ -29,6 +30,7 @@ class PointCloudPreprocess {
     void RoboSenseHandler(const sensor_msgs::msg::PointCloud2 &msg);
 
     PointCloudType cloud_full_, cloud_out_;
+    SE3 imu_from_lidar_; // 实际上是lidar系到imu系的坐标变换
 
     LidarType lidar_type_ = LidarType::AVIA;
     int point_filter_num_ = 1;

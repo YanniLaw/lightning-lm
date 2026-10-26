@@ -14,37 +14,36 @@ IMU ImuProcess::PreprocessImu(const IMU& raw) {
 }
 
 // imu_from_wheel 为轮心系到真实 IMU 系的 T_IB。
-// 三轴观测方差依次对应前向轮速、横向 NHC 和竖向 NHC，取倒数得到观测权重。
+// 方差依次对应轮心系前向轮速、横向 NHC 和竖向 NHC；权重转到 IMU 轴下。
 void ImuProcess::ConfigureWheelSpeedObservation(
     const SE3& imu_from_wheel, const Vec3d& velocity_variance) {
   imu_from_wheel_ = imu_from_wheel;
-  wheel_information_ = velocity_variance.cwiseInverse().asDiagonal();
+  const Mat3d rotation = imu_from_wheel.rotationMatrix();
+  wheel_information_ = rotation * velocity_variance.cwiseInverse().asDiagonal() *
+                       rotation.transpose();
 }
 
-// 构造轮心坐标系下的三维速度观测，供 ESKF 的 WHEEL_SPEED 更新迭代调用。
+// 用真实 IMU 坐标轴表达轮心速度观测，供 ESKF 的 WHEEL_SPEED 更新迭代调用。
 // 本函数只计算残差和雅可比，不取新测量，也不推进滤波状态。
 void ImuProcess::WheelSpeedObsModel(
     NavState& state, ESKF::CustomObservationModel& observation) {
-  const Mat3d wheel_from_imu =
-      imu_from_wheel_.rotationMatrix().transpose();
   const Vec3d& lever_arm = imu_from_wheel_.translation();
   // 先将世界系速度转到 IMU 系，再用去零偏角速度补偿 IMU 原点到轮心的杆臂速度。
   const Vec3d velocity_in_imu = state.rot_.inverse() * state.vel_;
   const Vec3d predicted =
-      wheel_from_imu *
-      (velocity_in_imu + (wheel_gyro_ - state.bg_).cross(lever_arm));
-  // 编码器提供前向速度，NHC 将轮心横向和竖向速度作为零值软约束。
-  const Vec3d residual = Vec3d(wheel_forward_speed_, 0.0, 0.0) - predicted;
+      velocity_in_imu + (wheel_gyro_ - state.bg_).cross(lever_arm);
+  // NHC 的零速度方向仍属于轮心系，已随观测及权重一起旋转到 IMU 轴下。
+  const Vec3d residual = wheel_velocity_ - predicted;
 
   // 按 NavState 的右扰动定义，填写姿态、世界系速度和陀螺零偏的雅可比。
   Eigen::Matrix<double, 3, ESKF::state_dim_> jacobian =
       Eigen::Matrix<double, 3, ESKF::state_dim_>::Zero();
   jacobian.block<3, 3>(0, NavState::kRotIdx) =
-      wheel_from_imu * SO3::hat(velocity_in_imu);
+      SO3::hat(velocity_in_imu);
   jacobian.block<3, 3>(0, NavState::kVelIdx) =
-      wheel_from_imu * state.rot_.matrix().transpose();
+      state.rot_.matrix().transpose();
   jacobian.block<3, 3>(0, NavState::kBgIdx) =
-      wheel_from_imu * SO3::hat(lever_arm);
+      SO3::hat(lever_arm);
   // 提交 ESKF 使用的 HᵀR⁻¹H 和 HᵀR⁻¹r，观测权重已包含在其中。
   observation.HTH_.noalias() =
       jacobian.transpose() * wheel_information_ * jacobian;
@@ -95,7 +94,8 @@ void ImuProcess::ProcessWithWheelOdometry(
     }
     if (latest_odom && wheel_updates_allowed) {
       // 固定本次更新的速度和陀螺输入，观测回调每次迭代使用同一份测量。
-      wheel_forward_speed_ = latest_odom->linear_velocity.x();
+      const Vec3d forward_axis = imu_from_wheel_.rotationMatrix().col(0);
+      wheel_velocity_ = forward_axis * forward_axis.dot(latest_odom->linear_velocity);
       wheel_gyro_ = gyro;
       kf_state.Update(ESKF::ObsType::WHEEL_SPEED, 1.0);
     }
@@ -137,15 +137,13 @@ void ImuProcess::ProcessWithWheelOdometry(
                    kf_state.GetX().GetPose(), *scan);
 }
 
-// 原地补偿到扫描末尾的 LiDAR 坐标系；轨迹及参考位姿均采用真实 IMU 的 T_WI。
+// 原地补偿到扫描末尾的 IMU 坐标系；轨迹及参考位姿均采用真实 IMU 的 T_WI。
 void ImuProcess::DeskewPointCloud(double scan_begin_time,
                                   const DeskewTrajectory& trajectory,
                                   const SE3& world_from_imu_end,
                                   PointCloudType& scan) const {
-  const SE3 imu_from_lidar(SO3(R_lidar_imu_), t_lidar_mu_);
-  // 组合世界系到扫描末尾 LiDAR 系的变换：T_Lend_W = T_IL⁻¹ * T_WIend⁻¹。
-  const SE3 lidar_end_from_world =
-      imu_from_lidar.inverse() * world_from_imu_end.inverse();
+  // 输入已在真实 IMU 系，补偿到扫描末尾的 IMU 系。
+  const SE3 imu_end_from_world = world_from_imu_end.inverse();
   std::size_t written = 0;
   const std::size_t original_size = scan.size();
   for (auto point : scan.points) {
@@ -154,9 +152,9 @@ void ImuProcess::DeskewPointCloud(double scan_begin_time,
     const double point_time = scan_begin_time + point.time;
     const auto pose = trajectory.EvaluatePose(point_time);
     if (!pose) continue;
-    // 点坐标依次经过 L(t) → I(t) → 世界系 → I(end) → L(end)。
+    // 点坐标依次经过 I(t) → 世界系 → I(end)。
     const Vec3d compensated =
-        lidar_end_from_world * *pose * imu_from_lidar *
+        imu_end_from_world * *pose *
         Vec3d(point.x, point.y, point.z);
     point.x = static_cast<float>(compensated.x());
     point.y = static_cast<float>(compensated.y());

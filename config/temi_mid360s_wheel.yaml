@@ -6,7 +6,6 @@ common:
   livox_lidar_topic: "/livox/lidar"
   imu_topic: "/livox/imu"
   wheel_odom_topic: "/odom"
-  lidar_frame: "livox_frame" # TF 发布雷达相对于水平 map 的真实位姿
 
 wheel_odometry:
   # 雷达在轮心系中的位姿：p_B = R * p_L + T，与 fasterlio 的 L -> I 分开。

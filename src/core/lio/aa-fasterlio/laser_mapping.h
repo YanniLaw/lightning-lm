@@ -76,8 +76,8 @@ class LaserMapping final : public LIO {
     }
 
     LIOInputStatus AddImu(const IMUPtr& imu) override;
-    LIOInputStatus AddPointCloud(const TimedPointCloud& scan) override;
-    LIOInputStatus AddWheelOdometry(const Odom& data) override;
+    LIOInputStatus AddPointCloud(const CloudPtr& scan) override;
+    LIOInputStatus AddWheelOdometry(const OdomPtr& data) override;
     void Stop() override;
 
    private:
@@ -87,7 +87,7 @@ class LaserMapping final : public LIO {
 
     // These methods are implementation details behind the transport-neutral
     // AddImu() and AddPointCloud() entry points.
-    bool ProcessPointCloud(const TimedPointCloud& scan);
+    bool ProcessPointCloud(const CloudPtr& scan);
     void ProcessIMU(const IMUPtr& imu);
     bool AdvanceImuPrediction(const IMUPtr& imu);
 
@@ -99,8 +99,7 @@ class LaserMapping final : public LIO {
     void LidarObsModel(NavState& s, ESKF::CustomObservationModel& obs);
 
     inline void PointBodyToWorld(const PointType& pi, PointType& po) {
-        Vec3d p_global(state_point_.rot_ *
-                           (offset_R_lidar_fixed_ * pi.getVector3fMap().cast<double>() + offset_t_lidar_fixed_) +
+        Vec3d p_global(state_point_.rot_ * pi.getVector3fMap().cast<double>() +
                        state_point_.pos_);
 
         po.x = p_global(0);
@@ -144,8 +143,8 @@ class LaserMapping final : public LIO {
     std::string map_file_path_;
 
     /// point clouds data
-    CloudPtr scan_undistort_{new PointCloudType()};   // scan after undistortion, in the LiDAR frame
-    CloudPtr scan_down_body_{new PointCloudType()};   // downsampled scan, in the LiDAR frame
+    CloudPtr scan_undistort_{new PointCloudType()};   // deskewed scan, in the actual IMU frame
+    CloudPtr scan_down_body_{new PointCloudType()};   // downsampled scan, in the actual IMU frame
     CloudPtr scan_down_world_{new PointCloudType()};  // downsampled scan, in the local frame
     pcl::VoxelGrid<PointType> voxel_scan_;            // voxel filter for current scan
 
@@ -162,7 +161,7 @@ class LaserMapping final : public LIO {
 
     std::mutex mtx_buffer_;
 
-    std::deque<TimedPointCloud> lidar_buffer_;
+    std::deque<CloudPtr> lidar_buffer_;
     std::deque<lightning::IMUPtr> imu_buffer_;
     std::deque<OdomPtr> odom_buffer_;
 
