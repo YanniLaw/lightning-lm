@@ -16,9 +16,10 @@
 #include "common/grid_map_data.h"
 #include "common/imu.h"
 #include "common/keyframe.h"
+#include "common/odom.h"
 #include "common/pose_graph_data.h"
 #include "common/sensor_data.h"
-#include "common/wheel_odometry_data.h"
+#include "common/wheel_odometry_options.h"
 #include "core/lio/lio.h"
 #include "core/lio/lio_data.h"
 #include "core/lio/lio_result.h"
@@ -70,10 +71,11 @@ class SlamSystem {
     void ProcessIMU(const lightning::IMUPtr& imu);
 
     /// Process a transport-independent lidar scan.
-    bool ProcessLidar(const TimedPointCloudData& cloud);
+    bool ProcessLidar(const CloudPtr& cloud);
 
     /// Register consumers before starting the system.
     void SetLIODataCallback(std::function<void(const LIOData&)> callback);
+    void SetLIOPoseCallback(std::function<void(const LIOState&)> callback);
     void SetNavStateCallback(std::function<void(const NavState&)> callback);
     void SetScanCallback(std::function<void(const CloudPtr&, const SE3&)> callback);
     void SetKeyframeCallback(std::function<void(const Keyframe::Ptr&)> callback);
@@ -81,7 +83,7 @@ class SlamSystem {
     void SetPoseGraphDataCallback(std::function<void(PoseGraphDataPtr)> callback);
 
     /// Wheel data is accepted as an extension point and is not fused yet.
-    LIOInputStatus ProcessWheelOdometry(const WheelOdometryData& data);
+    LIOInputStatus ProcessWheelOdometry(const OdomPtr& data);
 
     sys::SensorDispatcher::Stats GetInputStats() const;
 
@@ -90,11 +92,13 @@ class SlamSystem {
 
    private:
     void ProcessIMUOnWorker(const IMUPtr& imu);
-    bool ProcessLidarOnWorker(const TimedPointCloudData& cloud);
+    bool ProcessLidarOnWorker(const CloudPtr& cloud);
+    void ProcessWheelOdometryOnWorker(const OdomPtr& data);
     void HandleLIOPrediction(const LIOState& state);
     void HandleLIOResult(const LIOResult& result);
 
     Options options_;
+    WheelOdometryOptions wheel_options_;
     std::atomic_bool running_ = false;
 
     std::string map_name_;  // 地图名
@@ -104,6 +108,7 @@ class SlamSystem {
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        // 栅格地图
 
     std::function<void(const LIOData&)> lio_data_callback_;             // RVIZ
+    std::function<void(const LIOState&)> lio_pose_callback_;  // Scan-rate pose without cloud copies.
     std::function<void(const NavState&)> nav_state_callback_;           // UI
     std::function<void(const CloudPtr&, const SE3&)> scan_callback_;    // UI
     std::function<void(const Keyframe::Ptr&)> keyframe_callback_;       // UI

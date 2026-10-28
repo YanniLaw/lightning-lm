@@ -1,19 +1,21 @@
 #pragma once
 
+#include <chrono>
+#include <cstdint>
+#include <deque>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <memory>
+#include <mutex>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <tf2_ros/transform_broadcaster.h>
+#include <string>
+#include <vector>
 #include <visualization_msgs/msg/marker_array.hpp>
 
-#include <chrono>
-#include <cstdint>
-#include <deque>
-#include <memory>
-#include <mutex>
-
+#include "common/eigen_types.h"
 #include "common/grid_map_data.h"
 #include "common/pose_graph_data.h"
 #include "core/lio/lio_data.h"
@@ -26,7 +28,7 @@ class RosVisualization {
     explicit RosVisualization(const rclcpp::Node::SharedPtr& node, double local_map_publish_hz = 2.0,
                               std::size_t local_map_max_scans = 200);
 
-    void PublishLIOData(const LIOData& data);
+    void PublishLIOData(const LIOData& data, const SE3& map_from_local);
     // Queues the latest full pose-graph snapshot for ROS publication.
     // Ordinary updates are rate-limited; loop-optimized snapshots are flushed
     // at the next visualization timer tick.
@@ -45,8 +47,7 @@ class RosVisualization {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr registered_cloud_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ivox_map_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_pub_;
-    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
-    nav_msgs::msg::Path lio_path_;
+    nav_msgs::msg::Path lio_path_;  // History in the frontend's local world.
     rclcpp::Time last_map_publish_time_{0, 0, RCL_ROS_TIME};
     const double local_map_publish_period_sec_;
     const std::size_t local_map_max_scans_;

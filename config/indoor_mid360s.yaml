@@ -4,8 +4,18 @@ common:
   lidar_topic: "points_raw"
   livox_lidar_topic: "/livox/lidar"
   imu_topic: "/livox/imu"
-  enable_wheel_odom: false
   wheel_odom_topic: "/odom"
+
+wheel_odometry:
+  # 雷达在轮心系中的位姿：p_B = R * p_L + T；B=center_of_rotation_link。
+  extrinsic_T: [-0.12, 0.0, 0.21] # 雷达原点在轮心系中的位置，米
+  extrinsic_R: [0.992546157447128, 0.0, 0.1218692961206426,
+                0.0, 1.0, 0.0,
+                -0.1218692961206426, 0.0, 0.992546157447128] # L -> B，按行展开
+  wheel_time_offset: 0.0 # effective_time = header_time + offset，秒
+  default_velocity_variance: 0.01 # (m/s)^2 编码器前向速度方差，忽略消息协方差
+  nhc_lateral_variance: 0.01 # (m/s)^2 轮心侧向零速度软约束
+  nhc_vertical_variance: 0.04 # (m/s)^2 轮心竖向零速度软约束
 
 system:
   with_rviz: true # 是否发布的RViz可视化话题
@@ -13,7 +23,8 @@ system:
   rviz_local_map_max_scans: 200 # RViz累积局部地图最多保留的扫描帧数
   rviz_path_publish_hz: 10.0 # RViz轨迹发布频率
   with_loop_closing: true # 是否需要回环检测
-  with_ui: true # 是否需要3D UI
+  with_wheel_odometry_fusion: true # 是否向前端送入并融合轮速
+  with_ui: false # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
   with_g2p5: true # 是否需要栅格地图
   step_on_kf: false # 是否在关键帧处暂停
@@ -29,6 +40,9 @@ system:
   lidar_odom_skip_num: 2
   map_path: ./data/new_map/
   pub_tf: true
+  provide_odom_frame: false # true: 在 map 与 published_frame 之间插入 odom_frame
+  odom_frame: odom # provide=true 时使用，与 published_frame 及机体系名称不同
+  published_frame: odom # 无底盘 TF 时发布轮心；已有 odom->轮心时改为 odom
 
 # fasterlio 参数
 fasterlio:
@@ -40,7 +54,7 @@ fasterlio:
   skip_lidar_num: 0 # 点云的跳帧情况
   # Mid-360 点云按时间/扫描顺序排列；每 4 点抽 1 点会在长走廊中形成
   # 空间采样退化，导致前进方向约束不足。每 2 点抽 1 点是稳定性和开销的折中。
-  point_filter_num: 2 # 点云采样参数
+  point_filter_num: 3 # 点云采样参数
   max_iteration: 4 # 最大迭代次数
   filter_size_scan: 0.2 # 对scan进行的降采样
   filter_size_map: 0.2
@@ -73,9 +87,9 @@ fasterlio:
 
 g2p5:
   esti_floor: false   # 是否动态估计地面
-  lidar_height: 0.0   # 雷达安装高度
-  floor_height: -1.2   # 默认地面高度
-  min_th_floor: 0.20  # 距离地面这个高度的障碍物被扫入栅格地图中
+  lidar_height: 0.0   # 雷达安装高度 default 0.0 
+  floor_height: -0.21   # 默认地面高度 default -1.2
+  min_th_floor: 0.15  # 距离地面这个高度的障碍物被扫入栅格地图中
   max_th_floor: 1.0  # 距离地面这个高度的障碍物被扫入栅格地图中
   grid_map_resolution: 0.2 # 栅格地图分辨率
 

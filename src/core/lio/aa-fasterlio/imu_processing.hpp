@@ -4,6 +4,7 @@
 #define FASTER_LIO_IMU_PROCESSING_H
 
 #include <glog/logging.h>
+
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -13,7 +14,10 @@
 
 #include "common/eigen_types.h"
 #include "common/measure_group.h"
+#include "common/options.h"
 #include "common/point_def.h"
+#include "core/lightning_math.hpp"
+#include "core/lio/aa-fasterlio/deskew_trajectory.h"
 #include "core/lio/aa-fasterlio/eskf.hpp"
 #include "core/lio/aa-fasterlio/imu_filter.h"
 #include "core/lio/aa-fasterlio/pose6d.h"
@@ -30,13 +34,24 @@ class ImuProcess {
     ~ImuProcess();
 
     void Reset();
-    void SetExtrinsic(const Vec3d &transl, const Mat3d &rot);
     void SetGyrCov(const Vec3d &scaler);
     void SetAccCov(const Vec3d &scaler);
     void SetGyrBiasCov(const Vec3d &b_g);
     void SetAccBiasCov(const Vec3d &b_a);
 
     void Process(const MeasureGroup &meas, ESKF &kf_state, CloudPtr &scan);
+
+    void ProcessWithWheelOdometry(MeasureGroup& meas, ESKF& kf_state,
+                                  CloudPtr& scan, bool wheel_updates_allowed);
+    void ConfigureWheelSpeedObservation(const SE3& imu_from_wheel,
+                                        const Vec3d& velocity_variance);
+    void WheelSpeedObsModel(NavState& state,
+                           ESKF::CustomObservationModel& observation);
+    IMU PreprocessImu(const IMU& raw);
+    IMUPtr GetLastImu() const { return last_imu_; }
+    double GetLastPropagationTime() const {
+      return last_propagated_time_;
+    }
 
     bool IsIMUInited() const { return imu_need_init_ == false; }
     void SetUseIMUFilter(bool b) { use_imu_filter_ = b; }
@@ -54,6 +69,10 @@ class ImuProcess {
    private:
     void IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N);
     void UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, CloudPtr &pcl_out);
+    void DeskewPointCloud(double scan_begin_time,
+                          const DeskewTrajectory& trajectory,
+                          const SE3& world_from_imu_end,
+                          PointCloudType& scan) const;
 
     static inline constexpr int max_init_count_ = 20;
 
@@ -62,8 +81,6 @@ class ImuProcess {
     std::deque<lightning::IMUPtr> imu_queue_;
 
     std::vector<Pose6D> imu_pose_;
-    Mat3d R_lidar_imu_ = Mat3d ::Identity();
-    Vec3d t_lidar_mu_ = Vec3d ::Zero();
     Vec3d mean_acc_ = Vec3d::Zero();
     Vec3d mean_gyr_ = Vec3d::Zero();
     Vec3d angvel_last_ = Vec3d ::Zero();
@@ -77,6 +94,11 @@ class ImuProcess {
 
     bool use_imu_filter_ = true;
     IMUFilter filter_;
+    double last_propagated_time_ = 0;
+    SE3 imu_from_wheel_;
+    Mat3d wheel_information_ = Mat3d::Identity();
+    Vec3d wheel_velocity_ = Vec3d::Zero();  // Wheel-center observation in IMU axes.
+    Vec3d wheel_gyro_ = Vec3d::Zero();
 };
 
 inline ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {
@@ -95,6 +117,8 @@ inline ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {
 inline ImuProcess::~ImuProcess() {}
 
 inline void ImuProcess::Reset() {
+    filter_ = IMUFilter();
+    last_propagated_time_ = 0;
     mean_acc_ = Vec3d(0, 0, -1.0);
     mean_gyr_ = Vec3d(0, 0, 0);
     angvel_last_.setZero();
@@ -106,11 +130,6 @@ inline void ImuProcess::Reset() {
     imu_pose_.clear();
     last_imu_.reset(new lightning::IMU());
     cur_pcl_un_.reset(new PointCloudType());
-}
-
-inline void ImuProcess::SetExtrinsic(const Vec3d &transl, const Mat3d &rot) {
-    t_lidar_mu_ = transl;
-    R_lidar_imu_ = rot;
 }
 
 inline void ImuProcess::SetGyrCov(const Vec3d &scaler) { cov_gyr_scale_ = scaler; }
@@ -156,7 +175,12 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
 
     auto init_state = kf_state.GetX();
     init_state.timestamp_ = meas.imu_.back()->timestamp;
-    init_state.grav_ = -mean_acc_ / mean_acc_.norm() * G_m_s2;
+    // Gravity alignment
+    const double roll = std::atan2(mean_acc_.y(), mean_acc_.z());
+    const double pitch =
+        std::atan2(-mean_acc_.x(), std::hypot(mean_acc_.y(), mean_acc_.z()));
+    init_state.rot_ = SO3(math::RpyToRotM2(roll, pitch, 0.0));
+    init_state.grav_ = Vec3d(0.0, 0.0, -G_m_s2);
     init_state.bg_ = mean_gyr_;
     kf_state.ChangeX(init_state);
 
@@ -193,12 +217,12 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     Vec3d acc = Vec3d::Zero();
     Vec3d gyro = Vec3d::Zero();
 
-    if (use_imu_filter_) {
-        for (auto &imu : v_imu) {
-            auto imu_f = filter_.Filter(*imu);
-            *imu = imu_f;
-        }
-    }
+    // if (use_imu_filter_) {
+    //     for (auto &imu : v_imu) {
+    //         auto imu_f = filter_.Filter(*imu);
+    //         *imu = imu_f;
+    //     }
+    // }
 
     for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++) {
         auto &&head = *(it_imu);
@@ -210,7 +234,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
 
         angvel_avr = .5 * (head->angular_velocity + tail->angular_velocity);
         acc_avr = .5 * (head->linear_acceleration + tail->linear_acceleration);
-        acc_avr = acc_avr * acc_scale_factor_;
+        // acc_avr = acc_avr * acc_scale_factor_;
 
         if (head->timestamp < last_lidar_end_time_) {
             dt = tail->timestamp - last_lidar_end_time_;
@@ -258,6 +282,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     imu_state = kf_state.GetX();
     last_imu_ = meas.imu_.back();
     last_lidar_end_time_ = pcl_end_time;
+    last_propagated_time_ = imu_state.timestamp_;
 
     /*** sort point clouds by offset time ***/
     pcl_out = meas.scan_;
@@ -279,8 +304,8 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         acc_imu = (tail->acc);
         angvel_avr = (tail->gyr);
 
-        for (; it_pcl->time / double(1000) > head->offset_time && it_pcl != pcl_out->points.begin(); it_pcl--) {
-            dt = it_pcl->time / double(1000) - head->offset_time;
+        for (; it_pcl->time > head->offset_time && it_pcl != pcl_out->points.begin(); it_pcl--) {
+            dt = it_pcl->time - head->offset_time;
 
             /// dt 有时候存在非法数据
             if (dt < 0 || dt > lo::lidar_time_interval) {
@@ -296,9 +321,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
 
             Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);
             Vec3d T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos_);
-            Vec3d p_compensate = R_lidar_imu_.transpose() *
-                                 (imu_state.rot_.inverse() * (R_i * (R_lidar_imu_ * P_i + t_lidar_mu_) + T_ei) -
-                                  t_lidar_mu_);  // not accurate!
+            Vec3d p_compensate = imu_state.rot_.inverse() * (R_i * P_i + T_ei);
 
             // save Undistorted points and their rotation
             it_pcl->x = p_compensate(0);
@@ -342,6 +365,12 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
                 LOG(WARNING) << "imu init mean acc norm is abnormal for unit inference: " << mean_acc_norm
                              << ", keep accelerometer scale unchanged";
             }
+
+            Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
+            Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
+            Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
+            last_imu_ = std::make_shared<IMU>(PreprocessImu(*last_imu_));
+            last_propagated_time_ = imu_state.timestamp_;
 
             LOG(INFO) << "imu init done, bg: " << imu_state.bg_.transpose() << ", grav: " << imu_state.grav_.transpose()
                       << ", acc scale: " << acc_scale_factor_ << ", mean: " << mean_acc_.transpose() << ", "

@@ -133,8 +133,9 @@ void LoopClosing::RunWhenDoneCallback() {
         } catch (...) {
             LOG(FATAL) << "failed to collect loop-match results with an unknown exception";
         }
-        LOG(INFO) << match_results_.size() << " computations resulted in "
-                  << match_result.constraints.size() << " additional constraints.";
+        LOG_IF(INFO, match_results_.size() > 0) << match_results_.size() 
+            << " computations resulted in " << match_result.constraints.size() 
+            << " additional constraints.";
         match_results_.clear();
         done_callback_ = nullptr;
     }
@@ -176,7 +177,7 @@ std::vector<LoopMatchInput> LoopClosing::PrepareMatches(const Keyframe::Ptr& cur
     }
 
     const auto candidates = DetectLoopCandidates(current, keyframes);
-    if (options_.verbose_) {
+    if (options_.verbose_ && !candidates.empty()) {
         LOG(INFO) << "lc: get kf " << current->GetID() << " candi: " << candidates.size();
     }
 

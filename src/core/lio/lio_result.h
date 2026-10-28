@@ -17,9 +17,10 @@ enum class LIOUpdateType {
 /// State produced by a LIO frontend in the local/body coordinate convention.
 struct LIOState {
     double timestamp = 0.0;
-    SE3 pose = SE3();  // T_local_body.
+    SE3 pose = SE3();  // T_WI: actual IMU frame to the local world frame.
 
     std::optional<Vec3d> velocity;
+    std::optional<Vec3d> angular_velocity;  // Bias-corrected, in IMU axes.
     std::optional<Vec3d> gyro_bias;
     std::optional<Vec3d> accel_bias;
     std::optional<Vec3d> gravity;
@@ -33,13 +34,10 @@ struct LIOResult {
     LIOState state;
     LIOUpdateType update_type = LIOUpdateType::kPrediction;
 
-    // All clouds below are in the LiDAR coordinate frame at state.timestamp.
+    // All clouds below are in the actual IMU frame at state.timestamp.
     std::shared_ptr<const PointCloudType> cloud;
     std::shared_ptr<const PointCloudType> display_cloud;
     std::shared_ptr<const PointCloudType> projected_cloud;
-
-    // Transform from the LiDAR frame to the body frame used by state.pose.
-    SE3 body_from_lidar = SE3();
 
     // True only when this scan-matched result should become a graph node.
     bool keyframe_selected = false;

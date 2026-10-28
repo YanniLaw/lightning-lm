@@ -14,7 +14,7 @@ builtin_interfaces::msg::Time ToRosTime(double seconds);
 
 geometry_msgs::msg::TransformStamped ToTransform(const loc::LocalizationResult& result,
                                                  const std::string& frame_id = "map",
-                                                 const std::string& child_frame_id = "base_link");
+                                                 const std::string& child_frame_id = "imu_frame");
 
 nav_msgs::msg::OccupancyGrid ToOccupancyGrid(const GridMapData& map,
                                              const std::string& frame_id = "map");

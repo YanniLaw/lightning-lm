@@ -3,30 +3,42 @@
 //
 
 #include "core/system/slam.h"
+
+#include <pcl/io/pcd_io.h>
+#include <yaml-cpp/yaml.h>
+
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <opencv2/opencv.hpp>
+
 #include "core/g2p5/g2p5.h"
 #include "core/lio/lio_factory.h"
 #include "core/lio/lio_result_conversion.h"
 #include "core/maps/keyframe_map.h"
 #include "core/maps/tiled_map.h"
-
-#include <yaml-cpp/yaml.h>
-#include <pcl/io/pcd_io.h>
-#include <filesystem>
-#include <fstream>
-#include <opencv2/opencv.hpp>
+#include "io/wheel_odometry_options.h"
 
 namespace lightning {
 
-SlamSystem::SlamSystem(lightning::SlamSystem::Options options) : options_(options) {
-    sys::SensorDispatcher::Options dispatcher_options;
-    sensor_dispatcher_ = std::make_unique<sys::SensorDispatcher>(
-        dispatcher_options,
-        [this](const IMUPtr& imu) { ProcessIMUOnWorker(imu); },
-        [this](const TimedPointCloudData& cloud) { ProcessLidarOnWorker(cloud); });
-}
+SlamSystem::SlamSystem(lightning::SlamSystem::Options options) : options_(options) {}
 
 bool SlamSystem::Init(const std::string& yaml_path) {
     auto yaml = YAML::LoadFile(yaml_path);
+    std::string wheel_error;
+    if (!ParseWheelOdometryOptions(yaml, wheel_options_, wheel_error)) {
+      LOG(ERROR) << wheel_error;
+      return false;
+    }
+    sys::SensorDispatcher::Options dispatcher_options;
+    dispatcher_options.wheel_fusion_enabled = wheel_options_.fusion_enabled;
+    sensor_dispatcher_ = std::make_unique<sys::SensorDispatcher>(
+        dispatcher_options,
+        [this](const IMUPtr& imu) { ProcessIMUOnWorker(imu); },
+        [this](const CloudPtr& scan) { ProcessLidarOnWorker(scan); },
+        [this](const OdomPtr& data) {
+          ProcessWheelOdometryOnWorker(data);
+        });
     std::string lio_type = "aa_fasterlio";
     if (yaml["system"] && yaml["system"]["lio_type"]) {
         lio_type = yaml["system"]["lio_type"].as<std::string>();
@@ -231,7 +243,7 @@ void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
     }
 }
 
-bool SlamSystem::ProcessLidar(const TimedPointCloudData& cloud) {
+bool SlamSystem::ProcessLidar(const CloudPtr& cloud) {
     if (!running_ || !lio_) {
         return false;
     }
@@ -240,8 +252,7 @@ bool SlamSystem::ProcessLidar(const TimedPointCloudData& cloud) {
         return ProcessLidarOnWorker(cloud);
     }
 
-    auto scan = std::make_shared<TimedPointCloudData>(cloud);
-    const InputResult result = sensor_dispatcher_->AddPointCloud(std::move(scan));
+    const InputResult result = sensor_dispatcher_->AddPointCloud(cloud);
     if (result != InputResult::Accepted && result != InputResult::NotRunning) {
         LOG(WARNING) << "reject lidar input: " << static_cast<int>(result);
     }
@@ -255,7 +266,7 @@ void SlamSystem::ProcessIMUOnWorker(const IMUPtr& imu) {
     lio_->AddImu(imu);
 }
 
-bool SlamSystem::ProcessLidarOnWorker(const TimedPointCloudData& cloud) {
+bool SlamSystem::ProcessLidarOnWorker(const CloudPtr& cloud) {
     if (!lio_) {
         return false;
     }
@@ -276,6 +287,10 @@ void SlamSystem::HandleLIOPrediction(const LIOState& state) {
 void SlamSystem::HandleLIOResult(const LIOResult& result) {
     if (!result.state.pose_is_valid || !result.state.pose.matrix().allFinite()) {
         return;
+    }
+
+    if (lio_pose_callback_) {
+        lio_pose_callback_(result.state);
     }
 
     if (scan_callback_ && result.display_cloud) {
@@ -301,15 +316,30 @@ void SlamSystem::HandleLIOResult(const LIOResult& result) {
     }
 }
 
-LIOInputStatus SlamSystem::ProcessWheelOdometry(const WheelOdometryData& data) {
+LIOInputStatus SlamSystem::ProcessWheelOdometry(const OdomPtr& data) {
     if (!running_ || !lio_) {
         return LIOInputStatus::kNotRunning;
     }
-    const LIOInputStatus lio_status = lio_->AddWheelOdometry(data);
-    if (pose_graph_) {
-        pose_graph_->AddWheelOdometry(data);
+    if (!wheel_options_.fusion_enabled)
+      return LIOInputStatus::kUnsupported;
+    if (!data || !std::isfinite(data->timestamp) || data->timestamp <= 0.0)
+      return LIOInputStatus::kInvalidData;
+    if (!options_.online_mode_ || !sensor_dispatcher_)
+      return lio_->AddWheelOdometry(data);
+    switch (sensor_dispatcher_->AddWheelOdometry(data)) {
+      case InputResult::Accepted:
+        return LIOInputStatus::kAccepted;
+      case InputResult::NotRunning:
+        return LIOInputStatus::kNotRunning;
+      case InputResult::TimeDiscontinuity:
+        return LIOInputStatus::kTimeDiscontinuity;
+      default:
+        return LIOInputStatus::kInvalidData;
     }
-    return lio_status;
+}
+
+void SlamSystem::ProcessWheelOdometryOnWorker(const OdomPtr& data) {
+  if (lio_) lio_->AddWheelOdometry(data);
 }
 
 void SlamSystem::SetLIODataCallback(std::function<void(const LIOData&)> callback) {
@@ -321,6 +351,10 @@ void SlamSystem::SetLIODataCallback(std::function<void(const LIOData&)> callback
 
 void SlamSystem::SetNavStateCallback(std::function<void(const NavState&)> callback) {
     nav_state_callback_ = std::move(callback);
+}
+
+void SlamSystem::SetLIOPoseCallback(std::function<void(const LIOState&)> callback) {
+    lio_pose_callback_ = std::move(callback);
 }
 
 void SlamSystem::SetScanCallback(std::function<void(const CloudPtr&, const SE3&)> callback) {

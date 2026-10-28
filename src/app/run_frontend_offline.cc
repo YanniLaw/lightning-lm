@@ -8,8 +8,8 @@
 #include "core/g2p5/g2p5.h"
 #include "core/lio/lio_factory.h"
 #include "core/lio/lio_result_conversion.h"
+#include "core/lio/pointcloud_preprocess.h"
 #include "core/pose_graph/pose_graph.h"
-#include "ros/sensor_bridge.h"
 #include "ui/pangolin_window.h"
 #include "utils/timer.h"
 #include "wrapper/bag_io.h"
@@ -97,8 +97,8 @@ int main(int argc, char** argv) {
     });
 
     YAML_IO yaml(FLAGS_config);
-    const auto lidar_type = static_cast<LidarType>(yaml.GetValue<int>("fasterlio", "lidar_type"));
-    const double velodyne_time_scale = yaml.GetValue<double>("fasterlio", "time_scale");
+    PointCloudPreprocess preprocess;
+    if (!preprocess.Init(YAML::LoadFile(FLAGS_config))) return -1;
 
     rosbag
         .AddImuHandle("imu_raw",
@@ -108,8 +108,8 @@ int main(int argc, char** argv) {
                       })
         .AddPointCloud2Handle("points_raw",
                               [&](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                                  TimedPointCloudData scan;
-                                  if (!ros::ToTimedPointCloudData(*cloud, lidar_type, velodyne_time_scale, scan)) {
+                                  CloudPtr scan;
+                                  if (!preprocess.Process(*cloud, scan)) {
                                       return true;
                                   }
                                   lio->AddPointCloud(scan);

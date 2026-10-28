@@ -16,7 +16,7 @@ Lightning-LM特性：
 6. [done] 动静态图层分离定位，适配动态场景，可选择动态图层的策略，选配，选上的话会保存动态图层的地图内容，有三种策略可以选（短期、中期、永久），默认永久
 7. [done] 高频率IMU平滑输出，标配，100Hz
 8. GPS地理信息关联，选配 (TODO)
-9. 车辆里程计输入，选配 (TODO)
+9. [done] 建图前端编码器轮速与 NHC 融合，选配
 10. [done] 轻量优化库miao以及增量式优化（来自g2o，但更轻更快，支持增量优化，不需要重新构建优化模型），标配，在回环、定位中均有用到
 11. [done] 离线与在线两种验证方案。离线可以断点调试，一致性强。在线可以多线程并发，处理速度快，可以设置动态跳帧，占用低。
 12. [done] 基于外推器和平滑器的高频率输出，平滑因子可调
@@ -127,6 +127,16 @@ Ubuntu 20.04 应该也可行，未测试。
 
 如果希望调用在线的版本，则将offline部分改成online即可。
 
+### 轮速融合
+
+室内地面正常轮速场景下，通过 `system.with_wheel_odometry_fusion` 启用融合，并设置 `common.wheel_odom_topic`。前端使用编码器前向速度，同时在两轮中心施加侧向、竖向零速度软约束，通过现有 `WHEEL_SPEED` 观测回调更新。
+
+`wheel_odometry.extrinsic_R/T` 配置雷达在轮心系中的位姿。前端将其刚体逆变换与 `fasterlio.extrinsic_R/T` 组合为轮心到真实 IMU 的外参，不查询 TF，不根据消息 frame 名推断轴向，忽略消息协方差。
+
+三轴固定方差分别为 `default_velocity_variance`（前向，默认 `0.01`）、`nhc_lateral_variance`（侧向，默认 `0.01`）和 `nhc_vertical_variance`（竖向，默认 `0.04`），单位均为 `(m/s)^2`，数值越小约束越强。保留 `wheel_time_offset` 作为固定时间补偿，单位秒，默认 `0.0`。NHC 随轮速融合一起启用，旧可信度模式和自适应拒绝参数已移除。
+
+完整配置见 [Temi 示例](config/temi_mid360s_wheel.yaml)，模型及数据流程见 [观测设计](docs/superpowers/specs/2026-10-21-wheel-speed-nhc-design.md)。关闭融合后不订阅轮速话题，也无需配置轮速外参。
+
 ## 在数据集上测试
 
 您可以直接使用我们转换完的数据集。如果需要原始的数据集，您需要将它们转换到ros2的db3格式。
@@ -185,7 +195,7 @@ Ubuntu 20.04 应该也可行，未测试。
 imu和雷达外参默认为零就好，我们对这个不敏感。
 
 时间戳相关的fasterlio.time_scale是敏感的。您最好关注一下雷达点云是否带有每个点的时间戳，以及它们是否计算正确。这些代码在
-`src/core/lio/aa-fasterlio/pointcloud_preprocess`里。
+`src/core/lio/pointcloud_preprocess`里。
 
 其他参数调整参考下一节。
 

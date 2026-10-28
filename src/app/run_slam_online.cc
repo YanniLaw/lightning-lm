@@ -4,6 +4,7 @@
 
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+#include <rclcpp/executors/multi_threaded_executor.hpp>
 
 #include "ros/slam_node.h"
 #include "utils/timer.h"
@@ -24,7 +25,10 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    rclcpp::spin(node);
+    rclcpp::executors::MultiThreadedExecutor executor(
+        rclcpp::ExecutorOptions(), 2);
+    executor.add_node(node);
+    executor.spin();
     node->Stop();
 
     lightning::Timer::PrintAll();

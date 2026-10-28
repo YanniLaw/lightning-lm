@@ -4,6 +4,7 @@
 
 #include "common/eigen_types.h"
 #include "common/point_def.h"
+#include "core/lio/lio_result.h"
 
 namespace lightning {
 
@@ -13,10 +14,9 @@ namespace lightning {
 /// backend optimization and loop-closing consumers can register independent
 /// callbacks without coupling a frontend implementation to a transport.
 struct LIOData {
-    SE3 pose;
-    double timestamp = 0.0;
-    std::shared_ptr<const PointCloudType> registered_cloud;
-    std::shared_ptr<const PointCloudType> ivox_map;
+    LIOState state;
+    std::shared_ptr<const PointCloudType> registered_cloud;  // Frontend local world.
+    std::shared_ptr<const PointCloudType> ivox_map;  // Frontend local world.
 };
 
 }  // namespace lightning

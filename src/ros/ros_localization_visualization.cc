@@ -175,8 +175,7 @@ builtin_interfaces::msg::Time RosLocalizationVisualization::GetFallbackStamp() c
 builtin_interfaces::msg::Time RosLocalizationVisualization::GetCloudStamp(
     const PointCloudType& cloud) const {
     if (cloud.header.stamp != 0) {
-        return ToTimeMessage(
-            rclcpp::Time(static_cast<std::int64_t>(cloud.header.stamp), RCL_ROS_TIME));
+        return ToTimeMessage(pcl_conversions::fromPCL(cloud.header.stamp));
     }
     return GetFallbackStamp();
 }

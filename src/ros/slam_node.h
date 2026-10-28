@@ -1,22 +1,26 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <string>
 
-#include "lightning/srv/save_map.hpp"
-
-#include "core/system/slam.h"
 #include "common/sensor_data.h"
+#include "common/wheel_odometry_options.h"
+#include "core/system/slam.h"
+#include "lightning/srv/save_map.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "core/lio/pointcloud_preprocess.h"
 #include "ui/pangolin_window.h"
 
 namespace lightning::ros {
 
 class RosVisualization;
+class SlamPosePublisher;
 
 /// ROS 2 transport and lifecycle wrapper around the transport-independent SLAM core.
 class SlamNode final : public rclcpp::Node {
@@ -32,18 +36,26 @@ class SlamNode final : public rclcpp::Node {
     void HandlePointCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
     void HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr message);
     void HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr message);
+    SE3 GetMapFromLocal();
 
     std::string config_path_;
-    LidarType lidar_type_ = LidarType::AVIA;
-    double velodyne_time_scale_ = 1e-3;
+    PointCloudPreprocess preprocess_;
+    WheelOdometryOptions wheel_options_;
+    SE3 imu_from_wheel_;
+    std::mutex wheel_input_mutex_;
+    std::atomic_bool stopping_ = false;
     std::shared_ptr<SlamSystem> system_;
     std::shared_ptr<ui::PangolinWindow> ui_;
     std::shared_ptr<RosVisualization> visualization_;
+    std::shared_ptr<SlamPosePublisher> pose_publisher_;
+    std::mutex map_correction_mutex_;
+    SE3 map_from_local_ = SE3();
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_subscription_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr wheel_odometry_subscription_;
+    rclcpp::CallbackGroup::SharedPtr save_map_callback_group_;
     rclcpp::Service<srv::SaveMap>::SharedPtr save_map_service_;
 };
 

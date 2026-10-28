@@ -6,7 +6,7 @@ namespace lightning {
 
 void ScanAccumulator::AddSelected(const LIOResult& result) {
     if (!result.state.pose_is_valid || !result.state.pose.matrix().allFinite() ||
-        !result.body_from_lidar.matrix().allFinite() || !result.cloud || result.cloud->empty() ||
+        !result.cloud || result.cloud->empty() ||
         options_.max_scans == 0) {
         return;
     }
@@ -20,7 +20,6 @@ void ScanAccumulator::AddSelected(const LIOResult& result) {
 
     Entry entry;
     entry.state = result.state;
-    entry.body_from_lidar = result.body_from_lidar;
     entry.cloud = std::make_shared<const PointCloudType>(*result.cloud);
 
     if (selected_scans_.size() < options_.max_scans) {
@@ -29,9 +28,7 @@ void ScanAccumulator::AddSelected(const LIOResult& result) {
     }
 
     const Entry& newest = selected_scans_.back();
-    const SE3 newest_lidar_pose = newest.state.pose * newest.body_from_lidar;
-    const SE3 current_lidar_pose = result.state.pose * result.body_from_lidar;
-    const SE3 delta = newest_lidar_pose.inverse() * current_lidar_pose;
+    const SE3 delta = newest.state.pose.inverse() * result.state.pose;
     if (delta.translation().norm() < options_.replacement_translation_threshold ||
         delta.so3().log().norm() < options_.replacement_rotation_threshold) {
         return;
@@ -44,7 +41,7 @@ void ScanAccumulator::AddSelected(const LIOResult& result) {
 // NOTE: 当前实现与原版不同
 CloudPtr ScanAccumulator::BuildProjectedCloud(const LIOResult& current) const {
     if (!current.cloud || current.cloud->empty() || !current.state.pose_is_valid ||
-        !current.state.pose.matrix().allFinite() || !current.body_from_lidar.matrix().allFinite()) {
+        !current.state.pose.matrix().allFinite()) {
         return nullptr;
     }
 
@@ -57,14 +54,13 @@ CloudPtr ScanAccumulator::BuildProjectedCloud(const LIOResult& current) const {
 
     auto projected = std::make_shared<PointCloudType>(*current.cloud);
     // 原版是直接取卡尔曼滤波器的最新位姿，而这里是取得当前输入的位姿
-    const SE3 current_lidar_pose = current.state.pose * current.body_from_lidar;
     for (const auto& entry : selected_scans_) {
         if (!entry.cloud) {
             continue;
         }
 
         const SE3 history_to_current =
-            current_lidar_pose.inverse() * (entry.state.pose * entry.body_from_lidar);
+            current.state.pose.inverse() * entry.state.pose;
         const std::size_t point_limit = std::min(options_.max_points_per_scan, entry.cloud->size());
         for (std::size_t index = 0; index < point_limit; ++index) {
             const Vec3d point = history_to_current * ToVec3d(entry.cloud->points[index]);

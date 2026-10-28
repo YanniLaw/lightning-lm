@@ -3,10 +3,12 @@
 //
 
 #include "core/lio/aa-fasterlio/eskf.hpp"
-#include "core/lightning_math.hpp"
 
 #include <Eigen/Eigenvalues>
 #include <algorithm>
+#include <cmath>
+
+#include "core/lightning_math.hpp"
 
 namespace {
 
@@ -102,7 +104,11 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
  * @param obs
  * @param R
  */
-void ESKF::Update(ESKF::ObsType obs, const double& R) {
+bool ESKF::Update(ESKF::ObsType obs, const double& R) {
+    const bool is_lidar = obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR;
+    const bool use_aa = use_aa_ && is_lidar;
+    if (!std::isfinite(R) || R <= 0.0) return false;
+    bool applied_update = false;
     custom_obs_model_.valid_ = true;
     custom_obs_model_.converge_ = true;
 
@@ -128,7 +134,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         /// 计算observation function，主要是residual_, h_x_, s_
         /// x_ 在每次迭代中都是更新的，线性化点也会更新
-        if (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) {
+        if (is_lidar) {
             lidar_obs_func_(x_, custom_obs_model_);
         } else if (obs == ObsType::WHEEL_SPEED) {
             wheelspeed_obs_func_(x_, custom_obs_model_);
@@ -141,15 +147,16 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         if (custom_obs_model_.valid_ == false) {
-            x_ = last_x;
+            x_ = start_x; // last_x
             P_ = P_propagated;
-            return;
+            return false;
         }
 
-        if (use_aa_ && i > -1 && (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) &&
-            custom_obs_model_.lidar_residual_mean_ >= last_lidar_res * 1.01) {
-            x_ = last_x;
-            break;
+        if (use_aa && i > -1 && custom_obs_model_.lidar_residual_mean_ >= last_lidar_res * 1.01) {
+            // AA 提前退出时整次更新失败，状态和协方差一起回退。
+            x_ = start_x; // last_x
+            P_ = P_propagated;
+            return false;
         }
         iterated_num += 1;
 
@@ -157,7 +164,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             continue;
         }
 
-        if (i == -1) {
+        if (is_lidar && i == -1) {
             init_res = custom_obs_model_.lidar_residual_mean_;
             if (init_res < 1e-9) {
                 init_res = 1e-9;  // 可能有零
@@ -165,7 +172,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         iterations_ = i + 2;  // i从-1开始计
-        final_res_ = custom_obs_model_.lidar_residual_mean_ / init_res;
+        if (is_lidar) final_res_ = custom_obs_model_.lidar_residual_mean_ / init_res;
 
         StateVecType dx = x_.boxminus(start_x);  // 当前x与起点之间的dx
         dx_current = dx;                         //
@@ -192,54 +199,54 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             }
         }
 
-        Mat6d HTH = custom_obs_model_.HTH_;
-        Vec6d HTr = custom_obs_model_.HTr_;
-        Mat6d HTH_sym = 0.5 * (HTH + HTH.transpose());
-
-        Eigen::SelfAdjointEigenSolver<Mat6d> eigen_solver(HTH_sym);
-        if (eigen_solver.info() != Eigen::Success) {
-            LOG(WARNING) << "Failed to decompose ESKF observation information matrix.";
-            continue;
-        }
-
-        const Vec6d eigen_values = eigen_solver.eigenvalues();
-        const Mat6d eigen_vectors = eigen_solver.eigenvectors();
-        const double max_eigen_value = std::max(1e-12, eigen_values.maxCoeff());
-        const double degeneracy_threshold = max_eigen_value * options_.degeneracy_threshold_ratio_;
-
-        // LOG(INFO) << "eigen values of HTH: " << eigen_values.transpose();
-
-        Vec6d observable_mask = Vec6d::Zero();
+        CovType HTH_eff = custom_obs_model_.HTH_;
+        StateVecType HTr_eff = custom_obs_model_.HTr_;
         int nullity = 0;
-        for (int k = 0; k < observable_mask.size(); ++k) {
-            if (eigen_values(k) > degeneracy_threshold) {
-                observable_mask(k) = 1.0;
-            } else {
-                nullity++;
+        if (is_lidar) {
+            const Mat6d HTH = HTH_eff.topLeftCorner<pose_obs_dim_, pose_obs_dim_>();
+            const Mat6d HTH_sym = 0.5 * (HTH + HTH.transpose());
+            Eigen::SelfAdjointEigenSolver<Mat6d> eigen_solver(HTH_sym);
+            if (eigen_solver.info() != Eigen::Success) {
+                LOG(WARNING) << "Failed to decompose ESKF observation information matrix.";
+                continue;
             }
-        }
 
-        const Mat6d observable_projector = eigen_vectors * observable_mask.asDiagonal() * eigen_vectors.transpose();
-        const Mat6d HTH_eff = observable_projector * HTH_sym * observable_projector;
-        const Vec6d HTr_eff = observable_projector * HTr;
+            const Vec6d eigen_values = eigen_solver.eigenvalues();
+            const Mat6d eigen_vectors = eigen_solver.eigenvectors();
+            const double max_eigen_value = std::max(1e-12, eigen_values.maxCoeff());
+            const double degeneracy_threshold = max_eigen_value * options_.degeneracy_threshold_ratio_;
+
+            Vec6d observable_mask = Vec6d::Zero();
+            for (int k = 0; k < observable_mask.size(); ++k) {
+                if (eigen_values(k) > degeneracy_threshold) {
+                    observable_mask(k) = 1.0;
+                } else {
+                    nullity++;
+                }
+            }
+
+            const Mat6d observable_projector = eigen_vectors * observable_mask.asDiagonal() * eigen_vectors.transpose();
+            HTH_eff.topLeftCorner<pose_obs_dim_, pose_obs_dim_>() =
+                observable_projector * HTH_sym * observable_projector;
+            HTr_eff.head<pose_obs_dim_>() =
+                observable_projector * custom_obs_model_.HTr_.head<pose_obs_dim_>();
+        }
 
         CovType P_temp = (P_ / R).inverse();  // P阵上面已经更新
 
         /// 现在问题是这个权重太大，导致整体过于依赖先验 ...
         // P_temp.setIdentity();
 
-        P_temp.block<pose_obs_dim_, pose_obs_dim_>(0, 0) += HTH_eff;
+        P_temp += HTH_eff;
         CovType Q_inv = P_temp.inverse();  // Q inv
 
         // Q*H^T * R^-1 * r = K * r
         // <-- K ----->
-        K_r = Q_inv.template block<state_dim_, pose_obs_dim_>(0, 0) * HTr_eff;
+        K_r = Q_inv * HTr_eff;
 
         // K_H = Q^-1 H^T R^-1 H
         //       <--  K     ->
-        K_H.setZero();
-        K_H.template block<state_dim_, pose_obs_dim_>(0, 0) =
-            Q_inv.template block<state_dim_, pose_obs_dim_>(0, 0) * HTH_eff;
+        K_H = Q_inv * HTH_eff;
 
         // dx = Kr + (KH-I) dx
         // LOG(INFO) << "K_r: " << K_r.transpose()
@@ -249,8 +256,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         // check nan
         for (int j = 0; j < state_dim_; ++j) {
-            if (std::isnan(dx_current(j, 0))) {
-                return;
+            if (!std::isfinite(dx_current(j, 0))) {
+                x_ = start_x;
+                P_ = P_propagated;
+                return false;
             }
         }
 
@@ -273,10 +282,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                        << ", dvel: " << dx_current.segment<NavState::kBlockDim>(NavState::kVelIdx).norm();
             x_ = start_x;
             P_ = P_propagated;
-            return;
+            return false;
         }
 
-        if (!use_aa_) {
+        if (!use_aa) {
             x_ = x_.boxplus(dx_current);
         } else {
             // 转到起点的线性空间
@@ -293,9 +302,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         last_x = x_;
+        applied_update = true;
 
         // update last res
-        last_lidar_res = custom_obs_model_.lidar_residual_mean_;
+        if (is_lidar) last_lidar_res = custom_obs_model_.lidar_residual_mean_;
         custom_obs_model_.converge_ = true;
 
         for (int j = 0; j < state_dim_; j++) {
@@ -330,7 +340,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                     L_.block<3, 1>(idx, j) = res_temp_SO3 * (P_.block<3, 1>(idx, j));
                 }
 
-                for (int j = 0; j < pose_obs_dim_; j++) {
+                for (int j = 0; j < state_dim_; j++) {
                     K_H.block<3, 1>(idx, j) = res_temp_SO3 * (K_H.block<3, 1>(idx, j));
                 }
 
@@ -340,7 +350,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                 }
             }
 
-            P_ = L_ - K_H.block<state_dim_, pose_obs_dim_>(0, 0) * P_.template block<pose_obs_dim_, state_dim_>(0, 0);
+            P_ = L_ - K_H * P_;
 
             if (nullity > 0) {
                 // LOG_EVERY_N(INFO, 50) << "ESKF observation degeneracy rank " << (pose_obs_dim_ - nullity) << "/"
@@ -352,7 +362,13 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
     }
 
+    if (!applied_update || !P_.allFinite()) {
+        x_ = start_x;
+        P_ = P_propagated;
+        return false;
+    }
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
+    return true;
 }
 
 }  // namespace lightning

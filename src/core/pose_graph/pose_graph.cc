@@ -5,11 +5,11 @@
 #include "core/pose_graph/pose_graph.h"
 
 #include <glog/logging.h>
-#include <pcl/common/transforms.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <unordered_map>
 #include <utility>
@@ -116,7 +116,7 @@ bool PoseGraph::Init(const std::string& yaml_path) {
 
 Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
     if (result.update_type != LIOUpdateType::kScanMatched || !result.keyframe_selected || !result.state.pose_is_valid ||
-        !result.cloud || result.cloud->empty() || !result.body_from_lidar.matrix().allFinite()) {
+        !result.cloud || result.cloud->empty()) {
         return nullptr;
     }
 
@@ -140,8 +140,7 @@ Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
             return nullptr;
         }
 
-        auto cloud = std::make_shared<PointCloudType>();
-        pcl::transformPointCloud(*result.cloud, *cloud, result.body_from_lidar.matrix());
+        auto cloud = std::make_shared<PointCloudType>(*result.cloud);
         keyframe = std::make_shared<Keyframe>(static_cast<unsigned long>(next_keyframe_id_++), cloud, state);
         last_accepted_timestamp_ = result.state.timestamp;
 
@@ -151,16 +150,6 @@ Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
         AddWorkItem([this, keyframe]() { return HandleKeyframe(keyframe); });
     }
     return keyframe;
-}
-
-LIOInputStatus PoseGraph::AddWheelOdometry(const WheelOdometryData& data) {
-    if (data.timestamp_ns <= 0) {
-        return LIOInputStatus::kInvalidData;
-    }
-    if (!accepting_.load()) {
-        return LIOInputStatus::kNotRunning;
-    }
-    return LIOInputStatus::kUnsupported;
 }
 
 std::vector<KeyframeMapEntry> PoseGraph::GetMapSnapshot() const {
@@ -305,7 +294,7 @@ void PoseGraph::DrainWorkQueue() {
         }
     }
 
-    LOG(INFO) << "Remaining work items in queue: " << work_queue_size;
+    LOG_IF(INFO, work_queue_size > 0) << "Remaining work items in queue: " << work_queue_size;
     // WhenDone also schedules an empty result when loop closing is disabled.
     // Resume asynchronously so flush barriers do not recurse into queue draining.
     loop_closing_.WhenDone([this](LoopClosing::MatchResult result) {
@@ -323,6 +312,7 @@ WorkItem::Result PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         if (!keyframe || !initialized_) {
             return WorkItem::Result::kDoNotRunOptimization;
         }
+        keyframe->SetOptPose(map_from_local_ * keyframe->GetLIOPose());
         keyframes_.Add(keyframe);
         if (!AddKeyframeToGraph(keyframe)) {
             LOG(FATAL) << "failed to add keyframe to pose graph: " << keyframe->GetID();
@@ -517,11 +507,18 @@ bool PoseGraph::OptimizeGraph() {
         LOG(FATAL) << "pose graph optimization failed";
     }
 
+    Keyframe::Ptr latest_optimized;
     for (const auto& estimate : result.nodes) {
         const auto keyframe = keyframes_.Find(estimate.id);
         if (keyframe != nullptr) {
             keyframe->SetOptPose(estimate.pose);
+            if (!latest_optimized || keyframe->GetID() > latest_optimized->GetID()) {
+                latest_optimized = keyframe;
+            }
         }
+    }
+    if (latest_optimized) {
+        map_from_local_ = latest_optimized->GetOptPose() * latest_optimized->GetLIOPose().inverse();
     }
 
     std::unordered_map<std::uint64_t, bool> outlier_states;
@@ -536,7 +533,7 @@ bool PoseGraph::OptimizeGraph() {
         }
     }
 
-    if (options_.verbose_) {
+    if (options_.verbose_ && !loop_constraints_.empty()) {
         const auto outlier_count = std::count_if(loop_constraints_.begin(), loop_constraints_.end(),
                                                  [](const PoseGraphConstraint& loop) { return loop.is_outlier; });
         LOG(INFO) << "loop outliers: " << outlier_count << "/" << loop_constraints_.size();
@@ -549,6 +546,7 @@ PoseGraphDataPtr PoseGraph::CreateDataSnapshot(bool optimized) {
     auto data = std::make_shared<PoseGraphData>();
     data->version = ++data_version_;
     data->optimized = optimized;
+    data->map_from_local = map_from_local_;
 
     const auto& all_keyframes = keyframes_.GetAll();
     data->nodes.reserve(all_keyframes.size());

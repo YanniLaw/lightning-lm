@@ -17,7 +17,7 @@
 struct PointXYZIT {
     PCL_ADD_POINT4D
     PCL_ADD_INTENSITY
-    double time;
+    double time;  // Seconds since scan start.
     PointXYZIT() {}
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };

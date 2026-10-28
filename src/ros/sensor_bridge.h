@@ -2,29 +2,21 @@
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "common/imu.h"
-#include "common/sensor_data.h"
-#include "common/wheel_odometry_data.h"
-#include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "common/odom.h"
 
 namespace lightning::ros {
 
 /// Convert a ROS IMU message into an algorithm-owned value.
 bool ToImuData(const sensor_msgs::msg::Imu& message, IMUPtr& output);
 
-/// Convert a Livox custom scan into the transport-independent representation.
-bool ToTimedPointCloudData(const livox_ros_driver2::msg::CustomMsg& message,
-                           TimedPointCloudData& output);
+// TF requires a valid pose; a valid twist can still be fused without one.
+bool IsValidPose(const geometry_msgs::msg::Pose& pose);
 
-/// Convert a standard PointCloud2 scan.  The Velodyne scale is in milliseconds
-/// per message time unit and is applied exactly once at this boundary.
-bool ToTimedPointCloudData(const sensor_msgs::msg::PointCloud2& message, LidarType lidar_type,
-                           double velodyne_time_scale, TimedPointCloudData& output);
-
-/// Convert a wheel-encoder odometry message without applying frame transforms
-/// or feeding it into an estimator.
-bool ToWheelOdometryData(const nav_msgs::msg::Odometry& message, WheelOdometryData& output);
+// Express wheel-center velocity in IMU axes and correct time before sharing.
+// imu_from_wheel maps the wheel frame into the actual IMU frame (T_IB).
+bool ToOdom(const nav_msgs::msg::Odometry& message,
+            const SE3& imu_from_wheel, double time_offset, OdomPtr& output);
 
 }  // namespace lightning::ros

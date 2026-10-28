@@ -1,5 +1,6 @@
 #include "ros/ros_visualization.h"
 
+#include <pcl/common/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <string>
@@ -7,6 +8,7 @@
 #include <utility>
 
 #include "ros/ros_conversions.h"
+#include "wrapper/ros_utils.h"
 
 namespace lightning::ros {
 namespace {
@@ -79,7 +81,6 @@ RosVisualization::RosVisualization(const rclcpp::Node::SharedPtr& node, double l
     grid_map_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>("/map", map_qos);
     ivox_map_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("/ivox_map", map_qos);
     local_map_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("/local_map", map_qos);
-    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node);
     pose_graph_publish_timer_ = node->create_wall_timer(
         std::chrono::milliseconds(100), [this]() { PublishPendingPoseGraph(); });
 }
@@ -244,41 +245,29 @@ void RosVisualization::PublishPoseGraphSnapshot(const PoseGraphData& data) {
     last_node_id_marker_count_ = data.nodes.size();
 }
 
-void RosVisualization::PublishLIOData(const LIOData& data) {
-    const rclcpp::Time stamp(static_cast<int64_t>(data.timestamp * 1e9), RCL_ROS_TIME);
-    const auto quat = data.pose.unit_quaternion();
-
-    geometry_msgs::msg::PoseStamped pose_msg;
-    pose_msg.header.stamp = stamp;
-    pose_msg.header.frame_id = "map";
-    pose_msg.pose.position.x = data.pose.translation().x();
-    pose_msg.pose.position.y = data.pose.translation().y();
-    pose_msg.pose.position.z = data.pose.translation().z();
-    pose_msg.pose.orientation.x = quat.x();
-    pose_msg.pose.orientation.y = quat.y();
-    pose_msg.pose.orientation.z = quat.z();
-    pose_msg.pose.orientation.w = quat.w();
-
+void RosVisualization::PublishLIOData(const LIOData& data, const SE3& map_from_local) {
+    const rclcpp::Time stamp(ToRosTime(data.state.timestamp), RCL_ROS_TIME);
+    const auto pose_msg = ToPoseStamped(data.state.pose, data.state.timestamp);
     lio_path_.header = pose_msg.header;
     lio_path_.poses.emplace_back(pose_msg);
     constexpr std::size_t kMaxPathPoses = 1000000;
     if (lio_path_.poses.size() > kMaxPathPoses) {
         lio_path_.poses.erase(lio_path_.poses.begin(), lio_path_.poses.begin() + lio_path_.poses.size() / 2);
     }
-    lio_path_pub_->publish(lio_path_);
-
-    geometry_msgs::msg::TransformStamped transform;
-    transform.header = pose_msg.header;
-    transform.child_frame_id = "base_link";
-    transform.transform.translation.x = pose_msg.pose.position.x;
-    transform.transform.translation.y = pose_msg.pose.position.y;
-    transform.transform.translation.z = pose_msg.pose.position.z;
-    transform.transform.rotation = pose_msg.pose.orientation;
-    tf_broadcaster_->sendTransform(transform);
+    auto map_path = lio_path_;
+    for (auto& pose : map_path.poses) {
+        const auto& p = pose.pose.position;
+        const auto& q = pose.pose.orientation;
+        const SE3 local_pose(Eigen::Quaterniond(q.w, q.x, q.y, q.z), Vec3d(p.x, p.y, p.z));
+        pose = ToPoseStamped(map_from_local * local_pose, ToSec(pose.header.stamp));
+    }
+    lio_path_pub_->publish(std::move(map_path));
 
     if (data.registered_cloud) {
         sensor_msgs::msg::PointCloud2 registered_msg;
-        pcl::toROSMsg(*data.registered_cloud, registered_msg);
+        PointCloudType registered_cloud;
+        pcl::transformPointCloud(*data.registered_cloud, registered_cloud, map_from_local.matrix());
+        pcl::toROSMsg(registered_cloud, registered_msg);
         registered_msg.header = pose_msg.header;
         registered_cloud_pub_->publish(registered_msg);
     }
@@ -299,7 +288,9 @@ void RosVisualization::PublishLIOData(const LIOData& data) {
 
     if (data.ivox_map) {
         sensor_msgs::msg::PointCloud2 ivox_map_msg;
-        pcl::toROSMsg(*data.ivox_map, ivox_map_msg);
+        PointCloudType ivox_map;
+        pcl::transformPointCloud(*data.ivox_map, ivox_map, map_from_local.matrix());
+        pcl::toROSMsg(ivox_map, ivox_map_msg);
         ivox_map_msg.header = pose_msg.header;
         ivox_map_pub_->publish(ivox_map_msg);
     }
@@ -317,6 +308,7 @@ void RosVisualization::PublishLIOData(const LIOData& data) {
         local_map.width = static_cast<uint32_t>(local_map.points.size());
         local_map.height = 1;
         local_map.is_dense = false;
+        pcl::transformPointCloud(local_map, local_map, map_from_local.matrix());
 
         sensor_msgs::msg::PointCloud2 local_map_msg;
         pcl::toROSMsg(local_map, local_map_msg);

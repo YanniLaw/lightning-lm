@@ -3,47 +3,60 @@
 #include <glog/logging.h>
 #include <yaml-cpp/yaml.h>
 
-#include <chrono>
 #include <mutex>
+#include <optional>
 #include <utility>
 
+#include "io/wheel_odometry_options.h"
 #include "lightning/srv/save_map.hpp"
 #include "ros/ros_visualization.h"
 #include "ros/sensor_bridge.h"
+#include "ros/slam_pose_publisher.h"
 
 namespace lightning::ros {
 namespace {
 
-bool ShouldLogWarning(std::chrono::steady_clock::time_point& last_log_time) {
-    static std::mutex mutex;
-    const auto now = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lock(mutex);
-    if (last_log_time == std::chrono::steady_clock::time_point::min() ||
-        now - last_log_time >= std::chrono::seconds(5)) {
-        last_log_time = now;
-        return true;
-    }
+bool ParsePoseOptions(const YAML::Node& yaml,
+                      SlamPosePublisher::Options* options) {
+  const auto system = yaml["system"];
+  if (system && system["pub_tf"]) {
+    options->publish_tf = system["pub_tf"].as<bool>();
+  }
+  if (system && system["provide_odom_frame"]) {
+    options->provide_odom_frame = system["provide_odom_frame"].as<bool>();
+  }
+  if (system && system["odom_frame"]) {
+    options->odom_frame = system["odom_frame"].as<std::string>();
+  }
+  if (system && system["published_frame"]) {
+    options->published_frame = system["published_frame"].as<std::string>();
+  }
+  if (options->published_frame != "imu_frame" &&
+      options->published_frame != "center_of_rotation_link" &&
+      options->published_frame != "odom") {
+    LOG(ERROR) << "published_frame must be imu_frame, "
+                  "center_of_rotation_link or odom";
     return false;
-}
-
-bool ReadLidarType(const YAML::Node& yaml, LidarType& type) {
-    const int value = yaml["fasterlio"]["lidar_type"].as<int>();
-    switch (value) {
-        case 1:
-            type = LidarType::AVIA;
-            return true;
-        case 2:
-            type = LidarType::VELO32;
-            return true;
-        case 3:
-            type = LidarType::OUST64;
-            return true;
-        case 4:
-            type = LidarType::ROBOSENSE;
-            return true;
-        default:
-            return false;
-    }
+  }
+  if (options->provide_odom_frame &&
+      (options->odom_frame.empty() || options->odom_frame == "map" ||
+       options->odom_frame == "imu_frame" ||
+       options->odom_frame == "center_of_rotation_link" ||
+       options->odom_frame == options->published_frame)) {
+    LOG(ERROR) << "provided odom_frame must differ from map and body "
+                  "frames and published_frame";
+    return false;
+  }
+  const bool needs_wheel_frame = options->published_frame != "imu_frame";
+  if (needs_wheel_frame &&
+      (!yaml["wheel_odometry"] ||
+       !yaml["wheel_odometry"]["extrinsic_T"] ||
+       !yaml["wheel_odometry"]["extrinsic_R"])) {
+    LOG(ERROR) << "wheel_odometry.extrinsic_T/R are required for "
+               << options->published_frame << " output";
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -55,17 +68,27 @@ SlamNode::~SlamNode() { Stop(); }
 
 bool SlamNode::Init() {
     YAML::Node yaml;
+    SlamPosePublisher::Options pose_options;
     try {
         yaml = YAML::LoadFile(config_path_);
-        if (!ReadLidarType(yaml, lidar_type_)) {
-            LOG(ERROR) << "unsupported fasterlio.lidar_type";
-            return false;
+        if (!preprocess_.Init(yaml)) return false;
+        std::string error;
+        if (!ParseWheelOdometryOptions(yaml, wheel_options_, error)) {
+          LOG(ERROR) << error;
+          return false;
         }
-        velodyne_time_scale_ = yaml["fasterlio"]["time_scale"].as<double>();
+        if (!ParsePoseOptions(yaml, &pose_options)) return false;
+        if (wheel_options_.fusion_enabled ||
+            pose_options.published_frame != "imu_frame") {
+          imu_from_wheel_ = preprocess_.GetImuFromLidar() *
+                            wheel_options_.lidar_from_wheel;
+        }
     } catch (const std::exception& exception) {
         LOG(ERROR) << "failed to read config: " << exception.what();
         return false;
     }
+
+    stopping_.store(false);
 
     SlamSystem::Options options;
     options.online_mode_ = true;
@@ -103,6 +126,12 @@ bool SlamNode::Init() {
     }
 
     const bool with_rviz = yaml["system"]["with_rviz"] && yaml["system"]["with_rviz"].as<bool>();
+    std::optional<SE3> imu_from_wheel;
+    if (pose_options.published_frame != "imu_frame") {
+      imu_from_wheel = imu_from_wheel_;
+    }
+    pose_publisher_ = std::make_shared<SlamPosePublisher>(
+        shared_from_this(), pose_options, imu_from_wheel);
     if (with_rviz) {
         const double publish_hz = yaml["system"]["rviz_local_map_publish_hz"]
                                       ? yaml["system"]["rviz_local_map_publish_hz"].as<double>()
@@ -112,19 +141,32 @@ bool SlamNode::Init() {
                                           : 200;
         visualization_ = std::make_shared<RosVisualization>(shared_from_this(), publish_hz, max_scans);
         system_->SetLIODataCallback([this](const LIOData& data) {
-            if (visualization_) {
-                visualization_->PublishLIOData(data);
+            const SE3 map_from_local = GetMapFromLocal();
+            if (pose_publisher_) {
+                pose_publisher_->PublishPose(data.state, map_from_local);
             }
-        });
-        system_->SetPoseGraphDataCallback([this](PoseGraphDataPtr data) {
             if (visualization_) {
-                visualization_->PublishPoseGraph(std::move(data));
+                visualization_->PublishLIOData(data, map_from_local);
             }
         });
         system_->SetGridMapCallback([this](GridMapDataPtr map) {
             if (visualization_) {
                 visualization_->PublishGridMap(std::move(map));
             }
+        });
+    } else if (pose_publisher_) {
+        system_->SetLIOPoseCallback([this](const LIOState& state) {
+            pose_publisher_->PublishPose(state, GetMapFromLocal());
+        });
+    }
+    if (pose_publisher_ || visualization_) {
+        system_->SetPoseGraphDataCallback([this](PoseGraphDataPtr data) {
+            if (!data) return;
+            {
+                std::lock_guard<std::mutex> lock(map_correction_mutex_);
+                map_from_local_ = data->map_from_local;
+            }
+            if (visualization_) visualization_->PublishPoseGraph(std::move(data));
         });
     }
 
@@ -142,17 +184,20 @@ bool SlamNode::Init() {
         livox_topic, qos,
         [this](livox_ros_driver2::msg::CustomMsg::ConstSharedPtr message) { HandleLivox(std::move(message)); });
 
-    const bool wheel_odometry_enabled = yaml["common"]["enable_wheel_odom"].as<bool>();
-    if (wheel_odometry_enabled) {
+    if (wheel_options_.fusion_enabled) {
         const std::string wheel_odometry_topic = yaml["common"]["wheel_odom_topic"].as<std::string>();
-        wheel_odometry_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
-            wheel_odometry_topic, qos,
-            [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
-                HandleWheelOdometry(std::move(message));
-            });
-        LOG(INFO) << "wheel odometry input enabled on " << wheel_odometry_topic << " (not fused)";
+        wheel_odometry_subscription_ =
+            create_subscription<nav_msgs::msg::Odometry>(
+                wheel_odometry_topic, rclcpp::SensorDataQoS(),
+                [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
+                  HandleWheelOdometry(std::move(message));
+                });
+        LOG(INFO) << "wheel odometry input enabled on " << wheel_odometry_topic;
     }
 
+    // Keep map saving independent of the serial sensor callbacks.
+    save_map_callback_group_ =
+        create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     save_map_service_ = create_service<srv::SaveMap>(
         "lightning/save_map",
         [this](const srv::SaveMap::Request::SharedPtr request,
@@ -164,7 +209,8 @@ bool SlamNode::Init() {
             }
             system_->SaveMap("./data/" + request->map_id + "/");
             response->response = 0;
-        });
+        },
+        rclcpp::ServicesQoS(), save_map_callback_group_);
 
     system_->StartSLAM();
     LOG(INFO) << "SLAM ROS node has been created";
@@ -172,9 +218,9 @@ bool SlamNode::Init() {
 }
 
 void SlamNode::HandleImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
-    if (!system_ || !message) {
-        return;
-    }
+  if (stopping_.load() || !system_ || !message) {
+    return;
+  }
     IMUPtr imu;
     if (ToImuData(*message, imu)) {
         system_->ProcessIMU(imu);
@@ -182,55 +228,55 @@ void SlamNode::HandleImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 }
 
 void SlamNode::HandlePointCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr message) {
-    if (!system_ || !message) {
-        return;
-    }
-    TimedPointCloudData scan;
-    if (ToTimedPointCloudData(*message, lidar_type_, velodyne_time_scale_, scan)) {
-        system_->ProcessLidar(scan);
+  if (stopping_.load() || !system_ || !message) {
+    return;
+  }
+    CloudPtr scan;
+    if (preprocess_.Process(*message, scan)) {
+      system_->ProcessLidar(scan);
     }
 }
 
 void SlamNode::HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr message) {
-    if (!system_ || !message) {
-        return;
-    }
-    TimedPointCloudData scan;
-    if (ToTimedPointCloudData(*message, scan)) {
-        system_->ProcessLidar(scan);
+  if (stopping_.load() || !system_ || !message) {
+    return;
+  }
+    CloudPtr scan;
+    if (preprocess_.Process(*message, scan)) {
+      system_->ProcessLidar(scan);
     }
 }
 
 void SlamNode::HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr message) {
-    if (!system_ || !message) {
-        return;
-    }
+  std::lock_guard<std::mutex> lock(wheel_input_mutex_);
+  if (stopping_.load() || !system_ || !message) {
+    return;
+  }
 
-    WheelOdometryData data;
-    if (!ToWheelOdometryData(*message, data)) {
-        static auto last_invalid_message_log = std::chrono::steady_clock::time_point::min();
-        if (ShouldLogWarning(last_invalid_message_log)) {
-            LOG(WARNING) << "reject invalid wheel odometry message";
-        }
-        return;
-    }
+  OdomPtr data;
+  if (!ToOdom(*message, imu_from_wheel_, wheel_options_.wheel_time_offset, data)) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Reject invalid wheel odometry");
+    return;
+  }
+  if (!wheel_options_.fusion_enabled) return;
+  const LIOInputStatus status = system_->ProcessWheelOdometry(data);
+  if (status != LIOInputStatus::kAccepted) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Wheel odometry rejected: status=%d",
+                         static_cast<int>(status));
+  }
+}
 
-    const LIOInputStatus status = system_->ProcessWheelOdometry(data);
-    if (status == LIOInputStatus::kUnsupported) {
-        static auto last_unsupported_log = std::chrono::steady_clock::time_point::min();
-        if (ShouldLogWarning(last_unsupported_log)) {
-            LOG(WARNING) << "wheel odometry received but is not fused by the current frontend";
-        }
-    } else if (status != LIOInputStatus::kAccepted) {
-        static auto last_rejected_log = std::chrono::steady_clock::time_point::min();
-        if (ShouldLogWarning(last_rejected_log)) {
-            LOG(WARNING) << "wheel odometry rejected with status " << static_cast<int>(status);
-        }
-    }
+SE3 SlamNode::GetMapFromLocal() {
+  std::lock_guard<std::mutex> lock(map_correction_mutex_);
+  return map_from_local_;
 }
 
 void SlamNode::Stop() {
+    stopping_.store(true);
     if (!system_) {
+        LOG(WARNING) << "System is not initialized, stopping SlamNode.";
         return;
     }
     imu_subscription_.reset();
@@ -243,9 +289,15 @@ void SlamNode::Stop() {
     LOG(INFO) << "sensor input stats: imu accepted=" << stats.accepted_imu
               << " processed=" << stats.processed_imu << ", scans accepted=" << stats.accepted_scans
               << " processed=" << stats.processed_scans << ", invalid=" << stats.rejected_invalid
-              << " time_rejected=" << stats.rejected_time << " queue_full=" << stats.rejected_queue_full
-              << " incomplete=" << stats.incomplete_scans;
+              << " time_rejected=" << stats.rejected_time << " queue_full=" << stats.rejected_queue_full;
+    LOG(INFO) << "wheel input stats: accepted=" << stats.accepted_wheel
+              << " processed=" << stats.processed_wheel
+              << " dropped=" << stats.dropped_wheel
+              << " cancelled=" << stats.cancelled_wheel
+              << " invalid=" << stats.invalid_wheel
+              << " time_rejected=" << stats.time_rejected_wheel;
     visualization_.reset();
+    pose_publisher_.reset();
     ui_.reset();
     system_.reset();
 }

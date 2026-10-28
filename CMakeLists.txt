@@ -65,6 +65,9 @@ endif ()
 add_subdirectory(src)
 
 if (LIGHTNING_WITH_ROS)
+    install(PROGRAMS scripts/filter_bag_tf.py
+            DESTINATION lib/${PROJECT_NAME}
+    )
     install(DIRECTORY config launch
             DESTINATION share/${PROJECT_NAME}/
     )

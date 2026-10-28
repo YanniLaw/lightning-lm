@@ -6,8 +6,8 @@
 #include <string>
 
 #include "common/imu.h"
+#include "common/odom.h"
 #include "common/sensor_data.h"
-#include "common/wheel_odometry_data.h"
 #include "core/lio/lio_data.h"
 #include "core/lio/lio_result.h"
 
@@ -30,11 +30,6 @@ struct LIOOptions {
     LIOUsage usage = LIOUsage::kMapping;
 };
 
-struct LIOCapabilities {
-    bool imu_prediction = false;
-    bool wheel_odometry = false;
-};
-
 /// Transport-independent interface shared by mapping and localization.
 class LIO {
    public:
@@ -45,15 +40,16 @@ class LIO {
     virtual ~LIO() = default;
 
     virtual bool Init(const std::string& config_path, const LIOOptions& options) = 0;
-    virtual LIOCapabilities GetCapabilities() const = 0;
 
     virtual void SetResultCallback(ResultCallback callback) = 0;
     virtual void SetPredictionCallback(PredictionCallback callback) = 0;
     virtual void SetDataCallback(DataCallback callback) = 0;
 
     virtual LIOInputStatus AddImu(const IMUPtr& imu) = 0;
-    virtual LIOInputStatus AddPointCloud(const TimedPointCloudData& scan) = 0;
-    virtual LIOInputStatus AddWheelOdometry(const WheelOdometryData& data) = 0;
+    // Points are in the actual IMU frame; header.stamp is scan start in us.
+    // After submission the caller must not modify the cloud; LIO is its writer.
+    virtual LIOInputStatus AddPointCloud(const CloudPtr& scan) = 0;
+    virtual LIOInputStatus AddWheelOdometry(const OdomPtr& data) = 0;
 
     virtual void Stop() = 0;
 };

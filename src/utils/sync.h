@@ -62,7 +62,7 @@ class MessageSync {
      */
     void ProcessOdom(OdomPtr msg) {
         UL lock(odom_mutex_);
-        double timestamp = msg->timestamp_;
+        double timestamp = msg->timestamp;
         if (timestamp < last_timestamp_odom_) {
             LOG(WARNING) << "odom (enc) loop back, time difference is " << last_timestamp_odom_ - timestamp;
         }
@@ -107,7 +107,7 @@ class MessageSync {
             }
         }
         for (auto& odom : odom_buffer_) {
-            double dt = fabs(odom->timestamp_ - curr_time_end);
+            double dt = fabs(odom->timestamp - curr_time_end);
             if (dt < best_dt[1]) {
                 best_dt[1] = dt;
                 best_odom = odom;
@@ -124,7 +124,7 @@ class MessageSync {
             while (!imu_buffer_.empty() && imu_buffer_.front()->timestamp < (curr_time_end - 0.1)) {
                 imu_buffer_.pop_front();
             }
-            while (!odom_buffer_.empty() && odom_buffer_.front()->timestamp_ < (curr_time_end - 0.1)) {
+            while (!odom_buffer_.empty() && odom_buffer_.front()->timestamp < (curr_time_end - 0.1)) {
                 odom_buffer_.pop_front();
             }
             scan_buffer_.clear();

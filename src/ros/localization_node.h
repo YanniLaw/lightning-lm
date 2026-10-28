@@ -12,6 +12,7 @@
 
 #include "core/system/loc_system.h"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "core/lio/pointcloud_preprocess.h"
 #include "ros/ros_localization_visualization.h"
 #include "ui/pangolin_window.h"
 
@@ -33,8 +34,7 @@ class LocalizationNode final : public rclcpp::Node {
     void HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr message);
 
     std::string config_path_;
-    LidarType lidar_type_ = LidarType::AVIA;
-    double velodyne_time_scale_ = 1e-3;
+    PointCloudPreprocess preprocess_;
     std::shared_ptr<LocSystem> system_;
     std::shared_ptr<ui::PangolinWindow> ui_;
     std::shared_ptr<RosLocalizationVisualization> visualization_;
