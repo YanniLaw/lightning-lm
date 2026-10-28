@@ -23,7 +23,7 @@ system:
   rviz_local_map_max_scans: 200 # RViz累积局部地图最多保留的扫描帧数
   rviz_path_publish_hz: 10.0 # RViz轨迹发布频率
   with_loop_closing: true # 是否需要回环检测
-  with_wheel_odometry_fusion: true # 是否订阅并融合轮速里程计
+  with_wheel_odometry_fusion: true # 是否向前端送入并融合轮速
   with_ui: false # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
   with_g2p5: true # 是否需要栅格地图
@@ -40,6 +40,9 @@ system:
   lidar_odom_skip_num: 2
   map_path: ./data/new_map/
   pub_tf: true
+  provide_odom_frame: false # true: 在 map 与 published_frame 之间插入 odom_frame
+  odom_frame: odom # provide=true 时使用，与 published_frame 及机体系名称不同
+  published_frame: odom # 无底盘 TF 时发布轮心；已有 odom->轮心时改为 odom
 
 # fasterlio 参数
 fasterlio:

@@ -20,6 +20,7 @@ struct LIOState {
     SE3 pose = SE3();  // T_WI: actual IMU frame to the local world frame.
 
     std::optional<Vec3d> velocity;
+    std::optional<Vec3d> angular_velocity;  // Bias-corrected, in IMU axes.
     std::optional<Vec3d> gyro_bias;
     std::optional<Vec3d> accel_bias;
     std::optional<Vec3d> gravity;

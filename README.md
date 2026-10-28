@@ -160,8 +160,73 @@ Message covariance is ignored. No TF lookup or inference from message frame name
 LiDAR preprocessing converts points to the actual IMU frame before dispatch. All local clouds used by LIO, loop closing
 and localization share this frame. Point clouds travel as `CloudPtr`, with scan start stored in the PCL header in
 microseconds; point offsets and algorithm time calculations remain in seconds. Wheel samples travel as `OdomPtr`,
-with `wheel_time_offset` applied once at the ROS boundary. RViz publishes `map` → `imu_frame` directly from the IMU pose;
-world clouds remain in `map`.
+with `wheel_time_offset` applied once at the ROS boundary.
+
+The TF rules follow Cartographer for the three supported `system.published_frame` targets:
+`imu_frame` (default), `center_of_rotation_link` and external `odom`.
+`provide_odom_frame` only controls whether `odom_frame` is inserted between `map` and `published_frame`.
+It does not select a sensor or control Odometry messages.
+
+| provide_odom_frame | published_frame | Published TF |
+| --- | --- | --- |
+| true | imu_frame | map → odom_frame → imu_frame |
+| true | center_of_rotation_link | map → odom_frame → wheel center → imu_frame |
+| true | odom | map → odom_frame → odom → wheel center → imu_frame |
+| false | imu_frame | map → imu_frame |
+| false | center_of_rotation_link | map → wheel center → imu_frame |
+| false | odom | map → odom → wheel center → imu_frame |
+
+For a robot whose chassis already publishes `odom` → `center_of_rotation_link`, use:
+
+```yaml
+system:
+  provide_odom_frame: true
+  odom_frame: local
+  published_frame: odom
+  pub_tf: true
+  with_wheel_odometry_fusion: true  # May be false without changing TF output.
+```
+
+SLAM publishes `map` → `local` and `local` → `odom`; the chassis keeps its `odom` → wheel-center TF.
+With `provide_odom_frame: false`, SLAM publishes `map` → `odom` directly and ignores `odom_frame`.
+The publisher reads the actual chassis TF, interpolating wheel-center poses at scan end independently of `/odom`
+messages and the fusion time offset. Only wheel fusion subscribes to `/odom`; TF samples do not enter the wheel queue.
+Both modes retain the existing wheel center → base_link → sensors chain.
+
+Without external odom TF, select `published_frame: center_of_rotation_link` to let LIO publish the wheel-center pose,
+or `imu_frame` to publish the tracked IMU. When LIO owns the wheel-center TF, disable the chassis TF for that child.
+Changing only the parent name cannot prevent two parents for the same body. Frame selection is explicit.
+
+The wheel-to-IMU static mount comes from the YAML extrinsics, including with fusion disabled.
+The default IMU target needs no wheel calibration when fusion is off. No TF lookup is used to find installation calibration.
+`odom_frame` must differ from `map`, `published_frame` and both body frames to avoid cycles.
+
+`/lio/odometry` remains an independent extension: every output scan publishes it regardless of TF, RViz or wheel fusion.
+With `provide_odom_frame: true`, the pose is local in `odom_frame` and backend loop corrections do not alter it.
+With `provide_odom_frame: false`, the pose is corrected into `map` and can change with loop corrections;
+`odom_frame` does not participate in this mode.
+The child describes the actual body: `imu_frame` for the IMU target, otherwise `center_of_rotation_link`.
+An external odom world is never used as the moving body. Both velocities use the body's axes, and wheel-center linear
+velocity includes lever-arm compensation. Covariances remain unspecified (zero-filled).
+`pub_tf: false` disables all mapping TF while keeping this Odometry topic.
+Keep `/lio/odometry` separate from the encoder input `/odom`; ROS remapping can rename the output.
+
+`slam_offline.launch.py bag:=<bag-directory>` filters recorded dynamic and static TF using the same YAML as SLAM.
+The filter removes old map → odom / map → local_map and any recorded transform whose child is now owned by SLAM.
+It preserves `/odom` measurements and the rest of the robot TF, accumulating all static batches for late subscribers.
+For manual playback alongside this launch, use both remaps:
+
+```bash
+ros2 bag play <bag-directory> --clock --remap /tf:=/lightning/bag_tf /tf_static:=/lightning/bag_tf_static
+```
+
+Playing raw TF bypasses this filtering. Start at the beginning to receive the bag's static transforms;
+`--start-offset` can skip them. On a live robot, disable competing chassis TF at its source.
+
+`system.pub_tf` works independently of `system.with_rviz`. The same backend correction is applied to TF,
+registered clouds, iVox/local maps and the frontend IMU path. Algorithm data stays in the LIO local world;
+the backend rebuilds historical maps from optimized keyframes. Localization TF behavior is unchanged.
+See the [TF rules design](docs/superpowers/specs/2026-10-27-cartographer-tf-rules-design.md) for transform directions.
 
 The three fixed variances are `default_velocity_variance` (forward, default `0.01`), `nhc_lateral_variance` (default `0.01`)
 and `nhc_vertical_variance` (default `0.04`), all in `(m/s)^2`. Smaller values give stronger constraints. The existing
@@ -169,8 +234,8 @@ and `nhc_vertical_variance` (default `0.04`), all in `(m/s)^2`. Smaller values g
 wheel trust modes and adaptive rejection parameters have been removed.
 
 See [the Temi configuration](config/temi_mid360s_wheel.yaml) and
-[the observation design](docs/superpowers/specs/2026-10-21-wheel-speed-nhc-design.md). Disabling fusion removes the wheel
-subscription and permits omitting the wheel configuration.
+[the observation design](docs/superpowers/specs/2026-10-21-wheel-speed-nhc-design.md). With fusion disabled, wheel configuration may be omitted for IMU output. Wheel-center and external-odom
+output still require the installation calibration; external-odom publication reads the chassis TF.
 
 ## Testing on Datasets
 

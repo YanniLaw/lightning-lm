@@ -16,11 +16,12 @@ namespace {
 
 constexpr std::size_t kWheelQueueSize = 512;
 
-LIOState ToLIOState(const NavState& state) {
+LIOState ToLIOState(const NavState& state, const IMUPtr& imu = nullptr) {
     LIOState result;
     result.timestamp = state.timestamp_;
     result.pose = state.GetPose();
     result.velocity = state.vel_;
+    if (imu) result.angular_velocity = imu->angular_velocity - state.bg_;
     result.gyro_bias = state.bg_;
     result.gravity = state.grav_;
     result.pose_is_valid = state.pose_is_ok_;
@@ -305,11 +306,12 @@ void LaserMapping::NotifyPrediction(const NavState& state) {
     }
 }
 
-void LaserMapping::NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double timestamp) {
+void LaserMapping::NotifyLIOData(const CloudPtr& cloud, const NavState& state) {
     if (!lio_data_callback_) {
         return;
     }
 
+    const SE3 pose = state.GetPose();
     auto registered_cloud = std::make_shared<PointCloudType>();
     registered_cloud->resize(cloud->size());
     for (size_t index = 0; index < cloud->size(); ++index) {
@@ -330,8 +332,7 @@ void LaserMapping::NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double 
     ivox_map->is_dense = false;
 
     LIOData data;
-    data.pose = pose;
-    data.timestamp = timestamp;
+    data.state = ToLIOState(state, p_imu_->GetLastImu());
     data.registered_cloud = std::move(registered_cloud);
     data.ivox_map = std::move(ivox_map);
     lio_data_callback_(data);
@@ -345,7 +346,7 @@ void LaserMapping::NotifyResult(const NavState& state,
     }
 
     LIOResult result;
-    result.state = ToLIOState(state);
+    result.state = ToLIOState(state, p_imu_->GetLastImu());
     result.update_type = update_type;
     result.cloud = CopyCloud(scan_undistort_);
     const CloudPtr& display_source =
@@ -419,7 +420,7 @@ bool LaserMapping::Run() {
 
         if (skip_lidar_cnt_ != 0) {
             SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
-            NotifyLIOData(scan_undistort_, kf_.GetX().GetPose(), kf_.GetX().timestamp_);
+            NotifyLIOData(scan_undistort_, kf_.GetX());
             NotifyResult(kf_.GetX(), LIOUpdateType::kPrediction, false);
 
             return false;
@@ -462,7 +463,7 @@ bool LaserMapping::Run() {
 
     if (cur_pts < 5) {
         SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
-        NotifyLIOData(scan_undistort_, state_point_.GetPose(), state_point_.timestamp_);
+        NotifyLIOData(scan_undistort_, state_point_);
         NotifyResult(state_point_, LIOUpdateType::kPrediction, false);
         LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", " << scan_down_body_->size();
         return false;
@@ -485,8 +486,7 @@ bool LaserMapping::Run() {
     SyncStateAndPrediction(p_imu_->GetLastPropagationTime());
 
     if (!matched) {
-        NotifyLIOData(scan_undistort_, state_point_.GetPose(),
-                        state_point_.timestamp_);
+        NotifyLIOData(scan_undistort_, state_point_);
         NotifyResult(state_point_, LIOUpdateType::kPrediction, false);
         LOG(WARNING) << "LIDAR update failed, keeping prediction.";
         return false;
@@ -517,7 +517,7 @@ bool LaserMapping::Run() {
     /// Keyframe selection remains inside the frontend, but IDs belong to PoseGraph.
     last_keyframe_selected_ = SelectKeyframe();
 
-    NotifyLIOData(scan_down_body_, state_point_.GetPose(), state_point_.timestamp_);
+    NotifyLIOData(scan_down_body_, state_point_);
     NotifyResult(state_point_, LIOUpdateType::kScanMatched, last_keyframe_selected_);
 
     LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "

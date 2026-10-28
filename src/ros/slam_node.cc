@@ -4,14 +4,62 @@
 #include <yaml-cpp/yaml.h>
 
 #include <mutex>
+#include <optional>
 #include <utility>
 
 #include "io/wheel_odometry_options.h"
 #include "lightning/srv/save_map.hpp"
 #include "ros/ros_visualization.h"
 #include "ros/sensor_bridge.h"
+#include "ros/slam_pose_publisher.h"
 
 namespace lightning::ros {
+namespace {
+
+bool ParsePoseOptions(const YAML::Node& yaml,
+                      SlamPosePublisher::Options* options) {
+  const auto system = yaml["system"];
+  if (system && system["pub_tf"]) {
+    options->publish_tf = system["pub_tf"].as<bool>();
+  }
+  if (system && system["provide_odom_frame"]) {
+    options->provide_odom_frame = system["provide_odom_frame"].as<bool>();
+  }
+  if (system && system["odom_frame"]) {
+    options->odom_frame = system["odom_frame"].as<std::string>();
+  }
+  if (system && system["published_frame"]) {
+    options->published_frame = system["published_frame"].as<std::string>();
+  }
+  if (options->published_frame != "imu_frame" &&
+      options->published_frame != "center_of_rotation_link" &&
+      options->published_frame != "odom") {
+    LOG(ERROR) << "published_frame must be imu_frame, "
+                  "center_of_rotation_link or odom";
+    return false;
+  }
+  if (options->provide_odom_frame &&
+      (options->odom_frame.empty() || options->odom_frame == "map" ||
+       options->odom_frame == "imu_frame" ||
+       options->odom_frame == "center_of_rotation_link" ||
+       options->odom_frame == options->published_frame)) {
+    LOG(ERROR) << "provided odom_frame must differ from map and body "
+                  "frames and published_frame";
+    return false;
+  }
+  const bool needs_wheel_frame = options->published_frame != "imu_frame";
+  if (needs_wheel_frame &&
+      (!yaml["wheel_odometry"] ||
+       !yaml["wheel_odometry"]["extrinsic_T"] ||
+       !yaml["wheel_odometry"]["extrinsic_R"])) {
+    LOG(ERROR) << "wheel_odometry.extrinsic_T/R are required for "
+               << options->published_frame << " output";
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 SlamNode::SlamNode(const std::string& config_path, const rclcpp::NodeOptions& options)
     : rclcpp::Node("lightning_slam", options), config_path_(config_path) {}
@@ -20,7 +68,7 @@ SlamNode::~SlamNode() { Stop(); }
 
 bool SlamNode::Init() {
     YAML::Node yaml;
-    bool publish_tf = true;
+    SlamPosePublisher::Options pose_options;
     try {
         yaml = YAML::LoadFile(config_path_);
         if (!preprocess_.Init(yaml)) return false;
@@ -29,12 +77,11 @@ bool SlamNode::Init() {
           LOG(ERROR) << error;
           return false;
         }
-        if (wheel_options_.fusion_enabled) {
+        if (!ParsePoseOptions(yaml, &pose_options)) return false;
+        if (wheel_options_.fusion_enabled ||
+            pose_options.published_frame != "imu_frame") {
           imu_from_wheel_ = preprocess_.GetImuFromLidar() *
                             wheel_options_.lidar_from_wheel;
-        }
-        if (yaml["system"]["pub_tf"]) {
-          publish_tf = yaml["system"]["pub_tf"].as<bool>();
         }
     } catch (const std::exception& exception) {
         LOG(ERROR) << "failed to read config: " << exception.what();
@@ -79,6 +126,12 @@ bool SlamNode::Init() {
     }
 
     const bool with_rviz = yaml["system"]["with_rviz"] && yaml["system"]["with_rviz"].as<bool>();
+    std::optional<SE3> imu_from_wheel;
+    if (pose_options.published_frame != "imu_frame") {
+      imu_from_wheel = imu_from_wheel_;
+    }
+    pose_publisher_ = std::make_shared<SlamPosePublisher>(
+        shared_from_this(), pose_options, imu_from_wheel);
     if (with_rviz) {
         const double publish_hz = yaml["system"]["rviz_local_map_publish_hz"]
                                       ? yaml["system"]["rviz_local_map_publish_hz"].as<double>()
@@ -87,21 +140,33 @@ bool SlamNode::Init() {
                                           ? yaml["system"]["rviz_local_map_max_scans"].as<std::size_t>()
                                           : 200;
         visualization_ = std::make_shared<RosVisualization>(shared_from_this(), publish_hz, max_scans);
-        visualization_->SetPublishTf(publish_tf);
         system_->SetLIODataCallback([this](const LIOData& data) {
-            if (visualization_) {
-                visualization_->PublishLIOData(data);
+            const SE3 map_from_local = GetMapFromLocal();
+            if (pose_publisher_) {
+                pose_publisher_->PublishPose(data.state, map_from_local);
             }
-        });
-        system_->SetPoseGraphDataCallback([this](PoseGraphDataPtr data) {
             if (visualization_) {
-                visualization_->PublishPoseGraph(std::move(data));
+                visualization_->PublishLIOData(data, map_from_local);
             }
         });
         system_->SetGridMapCallback([this](GridMapDataPtr map) {
             if (visualization_) {
                 visualization_->PublishGridMap(std::move(map));
             }
+        });
+    } else if (pose_publisher_) {
+        system_->SetLIOPoseCallback([this](const LIOState& state) {
+            pose_publisher_->PublishPose(state, GetMapFromLocal());
+        });
+    }
+    if (pose_publisher_ || visualization_) {
+        system_->SetPoseGraphDataCallback([this](PoseGraphDataPtr data) {
+            if (!data) return;
+            {
+                std::lock_guard<std::mutex> lock(map_correction_mutex_);
+                map_from_local_ = data->map_from_local;
+            }
+            if (visualization_) visualization_->PublishPoseGraph(std::move(data));
         });
     }
 
@@ -190,12 +255,18 @@ void SlamNode::HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr messa
                          "Reject invalid wheel odometry");
     return;
   }
+  if (!wheel_options_.fusion_enabled) return;
   const LIOInputStatus status = system_->ProcessWheelOdometry(data);
   if (status != LIOInputStatus::kAccepted) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                          "Wheel odometry rejected: status=%d",
                          static_cast<int>(status));
   }
+}
+
+SE3 SlamNode::GetMapFromLocal() {
+  std::lock_guard<std::mutex> lock(map_correction_mutex_);
+  return map_from_local_;
 }
 
 void SlamNode::Stop() {
@@ -222,6 +293,7 @@ void SlamNode::Stop() {
               << " invalid=" << stats.invalid_wheel
               << " time_rejected=" << stats.time_rejected_wheel;
     visualization_.reset();
+    pose_publisher_.reset();
     ui_.reset();
     system_.reset();
 }

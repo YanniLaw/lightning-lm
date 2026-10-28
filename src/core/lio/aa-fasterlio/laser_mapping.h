@@ -110,7 +110,7 @@ class LaserMapping final : public LIO {
 
     void MapIncremental();
 
-    void NotifyLIOData(const CloudPtr& cloud, const SE3& pose, double timestamp);
+    void NotifyLIOData(const CloudPtr& cloud, const NavState& state);
 
     bool LoadParamsFromYAML(const std::string &yaml);
 

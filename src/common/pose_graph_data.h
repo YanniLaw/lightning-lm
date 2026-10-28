@@ -32,6 +32,7 @@ struct PoseGraphConstraint {
 struct PoseGraphData {
     std::uint64_t version = 0;
     bool optimized = false;
+    SE3 map_from_local = SE3();  // Latest backend correction of the LIO world.
     std::vector<PoseGraphNode> nodes;
     std::vector<PoseGraphConstraint> loop_constraints;
 };

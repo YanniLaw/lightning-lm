@@ -144,6 +144,7 @@ class PoseGraph {
     OptimizedCallback optimized_callback_;
     DataCallback data_callback_;
     std::uint64_t data_version_ = 0;
+    SE3 map_from_local_ = SE3();  // Protected by graph_mutex_.
 
     std::unique_ptr<GraphOptimizer> optimizer_;
 

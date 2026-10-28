@@ -289,6 +289,10 @@ void SlamSystem::HandleLIOResult(const LIOResult& result) {
         return;
     }
 
+    if (lio_pose_callback_) {
+        lio_pose_callback_(result.state);
+    }
+
     if (scan_callback_ && result.display_cloud) {
         auto display_cloud = std::make_shared<PointCloudType>(*result.display_cloud);
         scan_callback_(std::move(display_cloud), result.state.pose);
@@ -347,6 +351,10 @@ void SlamSystem::SetLIODataCallback(std::function<void(const LIOData&)> callback
 
 void SlamSystem::SetNavStateCallback(std::function<void(const NavState&)> callback) {
     nav_state_callback_ = std::move(callback);
+}
+
+void SlamSystem::SetLIOPoseCallback(std::function<void(const LIOState&)> callback) {
+    lio_pose_callback_ = std::move(callback);
 }
 
 void SlamSystem::SetScanCallback(std::function<void(const CloudPtr&, const SE3&)> callback) {

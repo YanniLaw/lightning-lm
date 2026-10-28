@@ -84,6 +84,7 @@ if (LIGHTNING_WITH_ROS)
             core/lio/pointcloud_preprocess.cc
             ros/sensor_bridge.cc
             ros/ros_conversions.cc
+            ros/slam_pose_publisher.cc
             ros/ros_visualization.cc
             ros/ros_localization_visualization.cc
             ros/slam_node.cc
@@ -103,6 +104,7 @@ if (LIGHTNING_WITH_ROS)
             "message_filters"
             "pcl_conversions"
             "tf2_ros"
+            "tf2_msgs"
             "tf2"
             "rosbag2_cpp"
     )

@@ -312,6 +312,7 @@ WorkItem::Result PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         if (!keyframe || !initialized_) {
             return WorkItem::Result::kDoNotRunOptimization;
         }
+        keyframe->SetOptPose(map_from_local_ * keyframe->GetLIOPose());
         keyframes_.Add(keyframe);
         if (!AddKeyframeToGraph(keyframe)) {
             LOG(FATAL) << "failed to add keyframe to pose graph: " << keyframe->GetID();
@@ -506,11 +507,18 @@ bool PoseGraph::OptimizeGraph() {
         LOG(FATAL) << "pose graph optimization failed";
     }
 
+    Keyframe::Ptr latest_optimized;
     for (const auto& estimate : result.nodes) {
         const auto keyframe = keyframes_.Find(estimate.id);
         if (keyframe != nullptr) {
             keyframe->SetOptPose(estimate.pose);
+            if (!latest_optimized || keyframe->GetID() > latest_optimized->GetID()) {
+                latest_optimized = keyframe;
+            }
         }
+    }
+    if (latest_optimized) {
+        map_from_local_ = latest_optimized->GetOptPose() * latest_optimized->GetLIOPose().inverse();
     }
 
     std::unordered_map<std::uint64_t, bool> outlier_states;
@@ -538,6 +546,7 @@ PoseGraphDataPtr PoseGraph::CreateDataSnapshot(bool optimized) {
     auto data = std::make_shared<PoseGraphData>();
     data->version = ++data_version_;
     data->optimized = optimized;
+    data->map_from_local = map_from_local_;
 
     const auto& all_keyframes = keyframes_.GetAll();
     data->nodes.reserve(all_keyframes.size());

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <tf2_ros/transform_broadcaster.h>
-
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -27,11 +25,10 @@ namespace lightning::ros {
 /// ROS-only visualization consumer for core LIO and pose graph outputs.
 class RosVisualization {
    public:
-    void SetPublishTf(bool enabled);
     explicit RosVisualization(const rclcpp::Node::SharedPtr& node, double local_map_publish_hz = 2.0,
                               std::size_t local_map_max_scans = 200);
 
-    void PublishLIOData(const LIOData& data);
+    void PublishLIOData(const LIOData& data, const SE3& map_from_local);
     // Queues the latest full pose-graph snapshot for ROS publication.
     // Ordinary updates are rate-limited; loop-optimized snapshots are flushed
     // at the next visualization timer tick.
@@ -50,10 +47,7 @@ class RosVisualization {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr registered_cloud_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ivox_map_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_pub_;
-    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
-    bool publish_tf_ = true;
-    std::mutex tf_mutex_;
-    nav_msgs::msg::Path lio_path_;
+    nav_msgs::msg::Path lio_path_;  // History in the frontend's local world.
     rclcpp::Time last_map_publish_time_{0, 0, RCL_ROS_TIME};
     const double local_map_publish_period_sec_;
     const std::size_t local_map_max_scans_;
@@ -68,8 +62,5 @@ class RosVisualization {
     std::size_t last_node_id_marker_count_ = 0;
     rclcpp::TimerBase::SharedPtr pose_graph_publish_timer_;
 };
-
-std::vector<geometry_msgs::msg::TransformStamped> MakeLIOTransforms(
-    const LIOData& data, bool publish_tf);
 
 }  // namespace lightning::ros

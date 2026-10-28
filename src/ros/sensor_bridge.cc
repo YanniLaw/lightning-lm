@@ -24,6 +24,14 @@ bool IsFinite(const geometry_msgs::msg::Quaternion& quaternion) {
 
 }  // namespace
 
+bool IsValidPose(const geometry_msgs::msg::Pose& pose) {
+  const Eigen::Quaterniond quaternion(pose.orientation.w, pose.orientation.x,
+                                      pose.orientation.y, pose.orientation.z);
+  return IsFinite(pose.position) && IsFinite(pose.orientation) &&
+         std::isfinite(quaternion.norm()) &&
+         quaternion.norm() > std::numeric_limits<double>::epsilon();
+}
+
 bool ToImuData(const sensor_msgs::msg::Imu& message, IMUPtr& output) {
     const double timestamp = ToSec(message.header.stamp);
     if (!std::isfinite(timestamp) || !std::isfinite(message.angular_velocity.x) ||
@@ -57,10 +65,7 @@ bool ToOdom(const nav_msgs::msg::Odometry& message, const SE3& imu_from_wheel,
       message.pose.pose.orientation.y, message.pose.pose.orientation.z);
   auto converted = std::make_shared<Odom>();
   converted->timestamp = timestamp;
-  if (IsFinite(message.pose.pose.position) &&
-      IsFinite(message.pose.pose.orientation) &&
-      std::isfinite(quaternion.norm()) &&
-      quaternion.norm() > std::numeric_limits<double>::epsilon()) {
+  if (IsValidPose(message.pose.pose)) {
     converted->pose =
         SE3(quaternion.normalized(),
             Vec3d(message.pose.pose.position.x, message.pose.pose.position.y,

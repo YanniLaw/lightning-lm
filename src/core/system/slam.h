@@ -75,6 +75,7 @@ class SlamSystem {
 
     /// Register consumers before starting the system.
     void SetLIODataCallback(std::function<void(const LIOData&)> callback);
+    void SetLIOPoseCallback(std::function<void(const LIOState&)> callback);
     void SetNavStateCallback(std::function<void(const NavState&)> callback);
     void SetScanCallback(std::function<void(const CloudPtr&, const SE3&)> callback);
     void SetKeyframeCallback(std::function<void(const Keyframe::Ptr&)> callback);
@@ -107,6 +108,7 @@ class SlamSystem {
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        // 栅格地图
 
     std::function<void(const LIOData&)> lio_data_callback_;             // RVIZ
+    std::function<void(const LIOState&)> lio_pose_callback_;  // Scan-rate pose without cloud copies.
     std::function<void(const NavState&)> nav_state_callback_;           // UI
     std::function<void(const CloudPtr&, const SE3&)> scan_callback_;    // UI
     std::function<void(const Keyframe::Ptr&)> keyframe_callback_;       // UI

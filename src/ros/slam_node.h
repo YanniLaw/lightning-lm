@@ -20,6 +20,7 @@
 namespace lightning::ros {
 
 class RosVisualization;
+class SlamPosePublisher;
 
 /// ROS 2 transport and lifecycle wrapper around the transport-independent SLAM core.
 class SlamNode final : public rclcpp::Node {
@@ -35,6 +36,7 @@ class SlamNode final : public rclcpp::Node {
     void HandlePointCloud(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
     void HandleLivox(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr message);
     void HandleWheelOdometry(nav_msgs::msg::Odometry::ConstSharedPtr message);
+    SE3 GetMapFromLocal();
 
     std::string config_path_;
     PointCloudPreprocess preprocess_;
@@ -45,6 +47,9 @@ class SlamNode final : public rclcpp::Node {
     std::shared_ptr<SlamSystem> system_;
     std::shared_ptr<ui::PangolinWindow> ui_;
     std::shared_ptr<RosVisualization> visualization_;
+    std::shared_ptr<SlamPosePublisher> pose_publisher_;
+    std::mutex map_correction_mutex_;
+    SE3 map_from_local_ = SE3();
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;

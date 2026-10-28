@@ -44,7 +44,11 @@ def generate_launch_description():
     )
 
     bag_play = ExecuteProcess(
-        cmd=["ros2", "bag", "play", bag, "--clock"],
+        cmd=[
+            "ros2", "bag", "play", bag, "--clock",
+            "--remap", "/tf:=/lightning/bag_tf",
+            "/tf_static:=/lightning/bag_tf_static",
+        ],
         condition=IfCondition(PythonExpression(["'", bag, "' != ''"])),
         output="screen",
     )
@@ -76,6 +80,12 @@ def generate_launch_description():
             ),
             slam_node,
             rviz_node,
+            Node(
+                package="lightning",
+                executable="filter_bag_tf.py",
+                output="screen",
+                parameters=[{"config_path": config}],
+            ),
             # Give the subscribers time to initialize before the first replayed
             # sensor messages are published.
             TimerAction(period=1.0, actions=[bag_play]),
