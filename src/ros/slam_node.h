@@ -55,6 +55,7 @@ class SlamNode final : public rclcpp::Node {
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_subscription_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr wheel_odometry_subscription_;
+    rclcpp::CallbackGroup::SharedPtr save_map_callback_group_;
     rclcpp::Service<srv::SaveMap>::SharedPtr save_map_service_;
 };
 

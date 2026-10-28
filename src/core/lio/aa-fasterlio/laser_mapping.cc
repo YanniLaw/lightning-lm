@@ -201,7 +201,8 @@ LIOInputStatus LaserMapping::AddImu(const IMUPtr& imu) {
     }
 
     ProcessIMU(imu);
-    if (HasPendingLidar()) {
+    if (HasPendingLidar() &&
+        (!lidar_pushed_ || last_timestamp_imu_ >= lidar_end_time_)) {
         Run();
     }
     return LIOInputStatus::kAccepted;
@@ -363,7 +364,7 @@ void LaserMapping::NotifyResult(const NavState& state,
 
 bool LaserMapping::Run() {
     if (!SyncPackages()) {
-        LOG(WARNING) << "sync package failed";
+        // LOG(WARNING) << "sync package failed";
         return false;
     }
 
@@ -427,9 +428,9 @@ bool LaserMapping::Run() {
         }
     }
 
-    LOG(INFO) << "=============================";
-    LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14) << measures_.lidar_begin_time_
-              << ", end: " << measures_.lidar_end_time_;
+    // LOG(INFO) << "=============================";
+    // LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14) << measures_.lidar_begin_time_
+    //           << ", end: " << measures_.lidar_end_time_;
 
     if (last_lidar_time_ > 0 && (measures_.lidar_begin_time_ - last_lidar_time_) > 0.5) {
         LOG(ERROR) << "检测到雷达断流，时长：" << (measures_.lidar_begin_time_ - last_lidar_time_);
@@ -498,11 +499,12 @@ bool LaserMapping::Run() {
 
     const double current_speed = state_point_.vel_.norm();
 
-    LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
-              << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_surf_ << ", "
-              << effect_feat_icp_;
-    LOG(INFO) << "delta trans: " << (pred_state.pos_ - state_point_.pos_).transpose()
-              << ", ang: " << delta_rotation_deg;
+    // LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
+    //           << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_surf_ << ", "
+    //           << effect_feat_icp_;
+    // LOG(INFO) << "delta trans: " << (pred_state.pos_ - state_point_.pos_).transpose()
+    //           << ", ang: " << delta_rotation_deg;
+
     // LOG(INFO) << "P diag: " << kf_.GetP().diagonal().transpose();
 
     // Vec3d v_from_last = (state_point_.pos_ - last_state.pos_) / (state_point_.timestamp_ - last_state.timestamp_);
@@ -520,9 +522,9 @@ bool LaserMapping::Run() {
     NotifyLIOData(scan_down_body_, state_point_);
     NotifyResult(state_point_, LIOUpdateType::kScanMatched, last_keyframe_selected_);
 
-    LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
-              << state_point_.rot_.angleZ<double>() * 180 / M_PI << ", vel: " << state_point_.vel_.transpose()
-              << ", grav: " << state_point_.grav_.transpose() << ", grav norm: " << state_point_.grav_.norm();
+    // LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
+    //           << state_point_.rot_.angleZ<double>() * 180 / M_PI << ", vel: " << state_point_.vel_.transpose()
+    //           << ", grav: " << state_point_.grav_.transpose() << ", grav norm: " << state_point_.grav_.norm();
 
     return true;
 }
@@ -573,7 +575,7 @@ bool LaserMapping::SelectKeyframe() {
         return false;
     }
 
-    LOG(INFO) << "LIO: select frontend keyframe, state: " << state_point_.pos_.transpose()
+    LOG(INFO) << "Add keyframe, state: " << state_point_.pos_.transpose()
               << ", time: " << std::setprecision(14) << state_point_.timestamp_;
 
     // 有keyframes时更新local map
@@ -646,7 +648,8 @@ bool LaserMapping::SyncPackages() {
     }
 
     if (last_timestamp_imu_ < lidar_end_time_) {
-        LOG(INFO) << "sync failed: " << std::setprecision(14) << last_timestamp_imu_ << ", " << lidar_end_time_;
+        LOG(WARNING) << "Waiting for IMU: latest=" << std::setprecision(14)
+                     << last_timestamp_imu_ << ", scan_end=" << lidar_end_time_;
         return false;
     }
 

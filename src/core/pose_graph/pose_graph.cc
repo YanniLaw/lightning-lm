@@ -294,7 +294,7 @@ void PoseGraph::DrainWorkQueue() {
         }
     }
 
-    LOG(INFO) << "Remaining work items in queue: " << work_queue_size;
+    LOG_IF(INFO, work_queue_size > 0) << "Remaining work items in queue: " << work_queue_size;
     // WhenDone also schedules an empty result when loop closing is disabled.
     // Resume asynchronously so flush barriers do not recurse into queue draining.
     loop_closing_.WhenDone([this](LoopClosing::MatchResult result) {
@@ -533,7 +533,7 @@ bool PoseGraph::OptimizeGraph() {
         }
     }
 
-    if (options_.verbose_) {
+    if (options_.verbose_ && !loop_constraints_.empty()) {
         const auto outlier_count = std::count_if(loop_constraints_.begin(), loop_constraints_.end(),
                                                  [](const PoseGraphConstraint& loop) { return loop.is_outlier; });
         LOG(INFO) << "loop outliers: " << outlier_count << "/" << loop_constraints_.size();

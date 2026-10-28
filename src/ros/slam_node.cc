@@ -195,6 +195,9 @@ bool SlamNode::Init() {
         LOG(INFO) << "wheel odometry input enabled on " << wheel_odometry_topic;
     }
 
+    // Keep map saving independent of the serial sensor callbacks.
+    save_map_callback_group_ =
+        create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     save_map_service_ = create_service<srv::SaveMap>(
         "lightning/save_map",
         [this](const srv::SaveMap::Request::SharedPtr request,
@@ -206,7 +209,8 @@ bool SlamNode::Init() {
             }
             system_->SaveMap("./data/" + request->map_id + "/");
             response->response = 0;
-        });
+        },
+        rclcpp::ServicesQoS(), save_map_callback_group_);
 
     system_->StartSLAM();
     LOG(INFO) << "SLAM ROS node has been created";
