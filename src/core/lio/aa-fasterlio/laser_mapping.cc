@@ -23,6 +23,7 @@ LIOState ToLIOState(const NavState& state, const IMUPtr& imu = nullptr) {
     result.velocity = state.vel_;
     if (imu) result.angular_velocity = imu->angular_velocity - state.bg_;
     result.gyro_bias = state.bg_;
+    result.accel_bias = state.Getba();
     result.gravity = state.grav_;
     result.pose_is_valid = state.pose_is_ok_;
     result.lidar_odom_reliable = state.lidar_odom_reliable_;
@@ -96,6 +97,9 @@ bool LaserMapping::Init(const std::string& config_yaml) {
     kf_.Init(eskf_options);
 
     running_.store(true);
+    LOG(INFO) << "LIO ba estimation: "
+              << (LIGHTNING_ESTIMATE_ACCEL_BIAS ? "enabled" : "disabled")
+              << ", state dimension: " << ESKF::state_dim_;
 
     return true;
 }

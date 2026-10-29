@@ -10,6 +10,9 @@ const std::vector<NavState::MetaInfo> NavState::vect_states_{
     {NavState::kPosIdx, NavState::kPosIdx, NavState::kBlockDim},  // pos
     {NavState::kVelIdx, NavState::kVelIdx, NavState::kBlockDim},  // vel
     {NavState::kBgIdx, NavState::kBgIdx, NavState::kBlockDim},    // bg
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+    {NavState::kBaIdx, NavState::kBaIdx, NavState::kBlockDim},    // ba
+#endif
 };
 
 /// SO3 变量的维度

@@ -20,8 +20,13 @@ bool ConvertToNavState(const LIOState& state, NavState& output) {
         output.SetVel(*state.velocity);
     }
     if (state.gyro_bias.has_value() && state.gyro_bias->allFinite()) {
-        output.bg_ = *state.gyro_bias;
+        output.bg_ = state.gyro_bias.value();
     }
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+    if (state.accel_bias.has_value() && state.accel_bias->allFinite()) {
+        output.ba_ = state.accel_bias.value();
+    }
+#endif
     if (state.gravity.has_value() && state.gravity->allFinite()) {
         output.grav_ = *state.gravity;
     }

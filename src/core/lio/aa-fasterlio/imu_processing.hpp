@@ -172,6 +172,10 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
 
         N++;
     }
+    LOG(INFO) << "IMU init done, mean acc: " << mean_acc_.transpose() 
+              << ", mean gyr: " << mean_gyr_.transpose()
+              << ", acc cov: " << cov_acc_.transpose() 
+              << ", gyr cov: " << cov_gyr_.transpose();
 
     auto init_state = kf_state.GetX();
     init_state.timestamp_ = meas.imu_.back()->timestamp;
@@ -182,12 +186,20 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     init_state.rot_ = SO3(math::RpyToRotM2(roll, pitch, 0.0));
     init_state.grav_ = Vec3d(0.0, 0.0, -G_m_s2);
     init_state.bg_ = mean_gyr_;
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+    // 安装倾角由重力对齐处理，加计零偏从零均值先验开始估计。
+    init_state.ba_.setZero();
+#endif
     kf_state.ChangeX(init_state);
 
     auto init_P = kf_state.GetP();
     init_P.setIdentity();
     init_P.block<NavState::kBlockDim, NavState::kBlockDim>(NavState::kBgIdx, NavState::kBgIdx) =
         0.0001 * Mat3d::Identity();
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+    init_P.block<NavState::kBlockDim, NavState::kBlockDim>(NavState::kBaIdx, NavState::kBaIdx) =
+        0.01 * Mat3d::Identity();
+#endif
     kf_state.ChangeP(init_P);
 
     // LOG(INFO) << "P diag: " << init_P.diagonal().transpose();
@@ -254,6 +266,11 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
         Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
         Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
+        Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
+        // 与 Predict 一致，使用本段起点姿态及零偏计算世界系加速度。
+        const auto& propagation_state = kf_state.GetX();
+        acc_s_last_ = propagation_state.rot_ * (acc_avr - propagation_state.Getba()) +
+                      propagation_state.grav_;
         kf_state.Predict(dt, Q_, gyro, acc);
 
         // LOG(INFO) << "gyro: " << gyro.transpose() << ", dt: " << dt;
@@ -264,10 +281,10 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         /* save the poses at each IMU measurements */
         imu_state = kf_state.GetX();
         angvel_last_ = angvel_avr - imu_state.bg_;
-        acc_s_last_ = imu_state.rot_ * acc_avr;
-        for (int i = 0; i < 3; i++) {
-            acc_s_last_[i] += imu_state.grav_[i];
-        }
+        // acc_s_last_ = imu_state.rot_ * acc_avr;
+        // for (int i = 0; i < 3; i++) {
+        //     acc_s_last_[i] += imu_state.grav_[i];
+        // }
 
         double &&offs_t = tail->timestamp - pcl_beg_time;
         imu_pose_.emplace_back(
@@ -317,7 +334,8 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
              * Note: Compensation direction is INVERSE of Frame's moving direction
              * So if we want to compensate a point at timestamp-i to the frame-e
              * p_compensate = R_imu_e ^ T * (R_i * P_i + T_ei) where T_ei is represented in global frame */
-            Mat3d R_i(R_imu * math::exp(angvel_avr, dt).matrix());
+            // Mat3d R_i(R_imu * math::exp(angvel_avr, 0.5*dt).matrix());
+            Mat3d R_i(R_imu * SO3::exp(angvel_avr * dt).matrix());
 
             Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);
             Vec3d T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos_);
@@ -369,6 +387,7 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
             Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
             Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
             Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
+            Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
             last_imu_ = std::make_shared<IMU>(PreprocessImu(*last_imu_));
             last_propagated_time_ = imu_state.timestamp_;
 
