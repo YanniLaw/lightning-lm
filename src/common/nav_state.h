@@ -9,6 +9,11 @@
 #include <glog/logging.h>
 #include <iomanip>
 
+// 1: 估计加速度计零偏；0: ba 固定为零。修改后需重新编译整个工程。
+#ifndef LIGHTNING_ESTIMATE_ACCEL_BIAS
+#define LIGHTNING_ESTIMATE_ACCEL_BIAS 0
+#endif
+
 namespace lightning {
 /**
  * 重构之后的状态变量
@@ -16,16 +21,19 @@ namespace lightning {
  *
  * 虽然我觉得有些地方还是啰嗦了点。。
  *
- * 4个3维块，共12维
+ * 开启加速度零偏估计时为15维，关闭时为12维
  */
 struct NavState {
-    constexpr static int dim = 12;       //  状态变量维度
-    constexpr static int full_dim = 12;  // 误差变量维度
+    constexpr static int dim = LIGHTNING_ESTIMATE_ACCEL_BIAS ? 15 : 12;
+    constexpr static int full_dim = dim;  // 误差变量维度
     constexpr static int kBlockDim = 3;
     constexpr static int kPosIdx = 0;
     constexpr static int kRotIdx = 3;
     constexpr static int kVelIdx = 6;
     constexpr static int kBgIdx = 9;
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+    constexpr static int kBaIdx = 12;
+#endif
 
     using VectState = Eigen::Matrix<double, dim, 1>;           // 矢量形式
     using FullVectState = Eigen::Matrix<double, full_dim, 1>;  // 全状态矢量形式
@@ -40,6 +48,9 @@ struct NavState {
         ret.block<kBlockDim, 1>(kRotIdx, 0) = rot_.log();
         ret.block<kBlockDim, 1>(kVelIdx, 0) = vel_;
         ret.block<kBlockDim, 1>(kBgIdx, 0) = bg_;
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        ret.block<kBlockDim, 1>(kBaIdx, 0) = ba_;
+#endif
         return ret;
     }
 
@@ -48,6 +59,9 @@ struct NavState {
         rot_ = SO3::exp(state.block<kBlockDim, 1>(kRotIdx, 0));
         vel_ = state.block<kBlockDim, 1>(kVelIdx, 0);
         bg_ = state.block<kBlockDim, 1>(kBgIdx, 0);
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        ba_ = state.block<kBlockDim, 1>(kBaIdx, 0);
+#endif
     }
 
     // 运动过程
@@ -55,7 +69,7 @@ struct NavState {
         FullVectState res = FullVectState::Zero();
         // 减零偏
         Vec3d omega = gyro - bg_;
-        Vec3d a_inertial = rot_ * acce;  // 加计零偏不再参与在线估计
+        Vec3d a_inertial = rot_ * (acce - Getba());
 
         for (int i = 0; i < 3; i++) {
             res(i) = vel_[i];
@@ -69,10 +83,13 @@ struct NavState {
     inline Eigen::Matrix<double, full_dim, dim> df_dx(const Vec3d& acce) const {
         Eigen::Matrix<double, full_dim, dim> cov = Eigen::Matrix<double, full_dim, dim>::Zero();
         cov.block<kBlockDim, kBlockDim>(kPosIdx, kVelIdx) = Mat3d::Identity();
-        Vec3d acc = acce;
+        Vec3d acc = acce - Getba();
         // Vec3d omega = gyro - bg_;
         cov.block<kBlockDim, kBlockDim>(kVelIdx, kRotIdx) = -rot_.matrix() * SO3::hat(acc);
         cov.block<kBlockDim, kBlockDim>(kRotIdx, kBgIdx) = -Eigen::Matrix3d::Identity();
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        cov.block<kBlockDim, kBlockDim>(kVelIdx, kBaIdx) = -rot_.matrix();
+#endif
         return cov;
     }
 
@@ -82,16 +99,23 @@ struct NavState {
         cov.block<kBlockDim, kBlockDim>(kVelIdx, 3) = -rot_.matrix();
         cov.block<kBlockDim, kBlockDim>(kRotIdx, 0) = -Eigen::Matrix3d::Identity();
         cov.block<kBlockDim, kBlockDim>(kBgIdx, 6) = Eigen::Matrix3d::Identity();
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        cov.block<kBlockDim, kBlockDim>(kBaIdx, 9) = Eigen::Matrix3d::Identity();
+#endif
         return cov;
     }
 
     /// 递推
     void oplus(const FullVectState& vec, double dt) {
         timestamp_ += dt;
-        pos_ += vec.middleRows(kPosIdx, kBlockDim) * dt;
+        pos_ += vec.middleRows(kPosIdx, kBlockDim) * dt +
+                0.5 * vec.middleRows(kVelIdx, kBlockDim) * dt * dt;
         rot_ = rot_ * SO3::exp(vec.middleRows(kRotIdx, kBlockDim) * dt);
-        // vel_ += vec.middleRows(kVelIdx, kBlockDim) * dt;
+        vel_ += vec.middleRows(kVelIdx, kBlockDim) * dt;
         bg_ += vec.middleRows(kBgIdx, kBlockDim) * dt;
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        ba_ += vec.middleRows(kBaIdx, kBlockDim) * dt;
+#endif
     }
 
     /**
@@ -105,6 +129,9 @@ struct NavState {
         result.block<kBlockDim, 1>(kRotIdx, 0) = (other.rot_.inverse() * rot_).log();
         result.block<kBlockDim, 1>(kVelIdx, 0) = vel_ - other.vel_;
         result.block<kBlockDim, 1>(kBgIdx, 0) = bg_ - other.bg_;
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        result.block<kBlockDim, 1>(kBaIdx, 0) = ba_ - other.ba_;
+#endif
 
         return result;
     }
@@ -120,6 +147,9 @@ struct NavState {
         ret.rot_ = rot_ * SO3::exp(dx.middleRows(kRotIdx, kBlockDim));
         ret.vel_ = vel_ + dx.middleRows(kVelIdx, kBlockDim);
         ret.bg_ = bg_ + dx.middleRows(kBgIdx, kBlockDim);
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        ret.ba_ = ba_ + dx.middleRows(kBaIdx, kBlockDim);
+#endif
         ret.grav_ = grav_;
 
         return ret;
@@ -149,7 +179,13 @@ struct NavState {
         pos_ = pose.translation();
     }
 
-    inline Vec3d Getba() const { return Vec3d::Zero(); }
+    inline Vec3d Getba() const {
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+        return ba_;
+#else
+        return Vec3d::Zero();
+#endif
+    }
     inline Vec3d Getbg() const { return bg_; }
     inline Vec3d GetVel() const { return vel_; }
     void SetVel(const Vec3d& v) { vel_ = v; }
@@ -164,6 +200,9 @@ struct NavState {
     SO3 rot_;                               // 旋转
     Vec3d vel_ = Vec3d::Zero();             // 速度
     Vec3d bg_ = Vec3d::Zero();              // 陀螺零偏
+#if LIGHTNING_ESTIMATE_ACCEL_BIAS
+    Vec3d ba_ = Vec3d::Zero();              // 加速度计零偏，真实 IMU 系，m/s²
+#endif
     Vec3d grav_ = Vec3d(0.0, 0.0, -9.81);   // 固定重力向量（不参与状态估计）
 };
 

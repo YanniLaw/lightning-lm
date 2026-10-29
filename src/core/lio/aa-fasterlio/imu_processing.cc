@@ -71,6 +71,7 @@ void ImuProcess::ProcessWithWheelOdometry(
   Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
   Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
   Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
+  Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
   Vec3d mean_gyro = previous_imu.angular_velocity;
   Vec3d mean_acc = previous_imu.linear_acceleration;
   // 推进到当前区间末尾；先预测，再按更新许可进行至多一次轮速/NHC 更新。

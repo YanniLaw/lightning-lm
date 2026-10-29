@@ -21,6 +21,7 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
         if (P(i, i) < min_cov_diag) {
             P(i, i) = min_cov_diag;
         } else if (P(i, i) > 100.0) {
+            LOG(WARNING) << "find too large diag in P: " << P(i, i);
             P(i, i) = 100.0;
         }
 
@@ -91,6 +92,11 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     }
 
     F_x1_ += f_x_final * dt;
+    // 与位置的常加速度积分一致，补齐姿态/加计零偏及加速度噪声的影响。
+    F_x1_.middleRows<3>(NavState::kPosIdx) +=
+        0.5 * dt * dt * f_x_.middleRows<3>(NavState::kVelIdx);
+    f_w_final.middleRows<3>(NavState::kPosIdx) =
+        0.5 * dt * f_w_.middleRows<3>(NavState::kVelIdx);
     P_ = (F_x1_)*P_ * (F_x1_).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
     P_ *= options_.predict_cov_inflation_;
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);

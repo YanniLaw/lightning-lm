@@ -22,7 +22,7 @@ system:
   rviz_local_map_publish_hz: 2.0 # RViz累积局部地图发布频率，<=0表示每帧发布
   rviz_local_map_max_scans: 200 # RViz累积局部地图最多保留的扫描帧数
   rviz_path_publish_hz: 10.0 # RViz轨迹发布频率
-  with_loop_closing: true # 是否需要回环检测
+  with_loop_closing: false # 是否需要回环检测
   with_wheel_odometry_fusion: true # 是否向前端送入并融合轮速
   with_ui: false # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
@@ -66,8 +66,8 @@ fasterlio:
   use_aa: false  # use anderson-acceleration
 
   acc_cov: 0.1
-  gyr_cov: 0.1
-  b_acc_cov: 0.0001
+  gyr_cov: 0.01
+  b_acc_cov: 0.01 # 加速度零偏驱动噪声方差，沿用现有 dt² 离散约定
   b_gyr_cov: 0.0001
   extrinsic_est_en: false      # true: enable the online estimation of IMU-LiDAR extrinsic
   extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
@@ -102,7 +102,7 @@ loop_closing:
   closest_id_th: 50     # 历史关键帧与当前帧的ID间隔
   max_range: 10.0       # 候选帧的最大距离
   ndt_score_th: 1.3     # ndt位姿分值
-  with_height: false
+  with_height: true
 
 
 ### localization ================================================================================================
