@@ -37,6 +37,7 @@ class ESKF {
         ACC_AS_GRAVITY,         // 重力作为加计观测量
         GPS,                    // GPS/RTk 六自由度位姿
         BIAS,
+        ZERO_VELOCITY,          // 静止速度、角速度及重力平衡观测
     };
 
    public:
@@ -69,6 +70,7 @@ class ESKF {
     struct Options {
         CustomObsFunction lidar_obs_func_;           // 雷达观测函数
         CustomObsFunction wheelspeed_obs_func_;      // 轮速观测函数
+        CustomObsFunction zero_velocity_obs_func_;   // 静止观测函数
         CustomObsFunction acc_as_gravity_obs_func_;  // 加计观测函数
         CustomObsFunction gps_obs_func_;
         CustomObsFunction bias_obs_func_;
@@ -93,6 +95,7 @@ class ESKF {
     void Init(Options options) {
         lidar_obs_func_ = options.lidar_obs_func_;
         wheelspeed_obs_func_ = options.wheelspeed_obs_func_;
+        zero_velocity_obs_func_ = options.zero_velocity_obs_func_;
         acc_as_gravity_obs_func_ = options.acc_as_gravity_obs_func_;
         gps_obs_func_ = options.gps_obs_func_;
         bias_obs_func_ = options.bias_obs_func_;
@@ -137,6 +140,7 @@ class ESKF {
 
     CustomObservationModel custom_obs_model_;
     CustomObsFunction lidar_obs_func_, wheelspeed_obs_func_, acc_as_gravity_obs_func_, gps_obs_func_, bias_obs_func_;
+    CustomObsFunction zero_velocity_obs_func_;
 
     int maximum_iter_ = 0;  // 最大迭代次数
     StateVecType limit_;

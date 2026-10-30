@@ -93,6 +93,10 @@ bool LaserMapping::Init(const std::string& config_yaml) {
         [this](NavState& state, ESKF::CustomObservationModel& observation) {
           p_imu_->WheelSpeedObsModel(state, observation);
         };
+    eskf_options.zero_velocity_obs_func_ =
+        [this](NavState& state, ESKF::CustomObservationModel& observation) {
+          zero_velocity_updater_.ObsModel(state, observation);
+        };
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
 
@@ -100,6 +104,8 @@ bool LaserMapping::Init(const std::string& config_yaml) {
     LOG(INFO) << "LIO ba estimation: "
               << (LIGHTNING_ESTIMATE_ACCEL_BIAS ? "enabled" : "disabled")
               << ", state dimension: " << ESKF::state_dim_;
+    LOG(INFO) << "LIO zero velocity update: "
+              << (with_zero_velocity_update_ ? "enabled" : "disabled");
 
     return true;
 }
@@ -117,6 +123,9 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
       return false;
     }
     try {
+        if (!LoadZuptParams(yaml)) {
+            return false;
+        }
         fasterlio::NUM_MAX_ITERATIONS = yaml["fasterlio"]["max_iteration"].as<int>();
         fasterlio::ESTI_PLANE_THRESHOLD = yaml["fasterlio"]["esti_plane_threshold"].as<float>();
 
@@ -185,6 +194,51 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     p_imu_->SetGyrBiasCov(Vec3d(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu_->SetAccBiasCov(Vec3d(b_acc_cov, b_acc_cov, b_acc_cov));
     return true;
+}
+
+bool LaserMapping::LoadZuptParams(const YAML::Node& yaml) {
+  const auto system = yaml["system"];
+  with_zero_velocity_update_ =
+      system && system["with_zero_velocity_update"] &&
+      system["with_zero_velocity_update"].as<bool>() && IsWheelOdomEnabled();
+  if (!with_zero_velocity_update_) {
+    return true;
+  }
+
+  ZeroVelocityUpdater::Options options;
+  const auto node = yaml["zupt"];
+  if (node) {
+    options.confirm_duration =
+        node["confirm_duration"].as<double>(options.confirm_duration);
+    options.max_wheel_speed =
+        node["max_wheel_speed"].as<double>(options.max_wheel_speed);
+    options.max_wheel_angular_speed =
+        node["max_wheel_angular_speed"].as<double>(options.max_wheel_angular_speed);
+    if (node["max_imu_angular_speed"]) {
+      options.max_imu_angular_speed = node["max_imu_angular_speed"].as<double>();
+    }
+    options.imu_noise_multiplier =
+        node["imu_noise_multiplier"].as<double>(options.imu_noise_multiplier);
+    options.velocity_variance =
+        node["velocity_variance"].as<double>(options.velocity_variance);
+  }
+  if (!std::isfinite(options.confirm_duration) ||
+      options.confirm_duration < 0.0) {
+    LOG(ERROR) << "Invalid zupt.confirm_duration";
+    return false;
+  }
+  for (double value :
+       {options.max_wheel_speed, options.max_wheel_angular_speed,
+        options.max_imu_angular_speed,
+        options.imu_noise_multiplier, options.velocity_variance}) {
+    if (!std::isfinite(value) || value <= 0.0) {
+      LOG(ERROR) << "ZUPT speed limits and observation variances "
+                    "must be positive";
+      return false;
+    }
+  }
+  zero_velocity_updater_.SetOptions(options);
+  return true;
 }
 
 LaserMapping::LaserMapping(Options options) : options_(options) {
@@ -261,6 +315,7 @@ LIOInputStatus LaserMapping::AddWheelOdometry(const OdomPtr& data) {
 
 void LaserMapping::Stop() {
   running_.store(false);
+  zero_velocity_updater_.Reset();
   imu_buffer_.clear();
   lidar_buffer_.clear();
   odom_buffer_.clear();
@@ -370,6 +425,19 @@ bool LaserMapping::Run() {
     if (!SyncPackages()) {
         // LOG(WARNING) << "sync package failed";
         return false;
+    }
+
+    // 静止成功才提交并短路；失败时测量包和滤波器仍可进入原有运动流程。
+    if (with_zero_velocity_update_ &&
+        p_imu_->IsIMUInited() && keyframe_selector_.HasSelected() &&
+        zero_velocity_updater_.TryUpdate(measures_, p_imu_->Q_, kf_)) {
+        p_imu_->FinishStationaryScan(measures_, kf_.GetX(), scan_undistort_);
+        last_lidar_time_ = measures_.lidar_begin_time_;
+        last_keyframe_selected_ = false;
+        SyncStateAndPrediction(measures_.lidar_end_time_);
+        NotifyLIOData(scan_undistort_, state_point_);
+        NotifyResult(state_point_, LIOUpdateType::kZeroVelocity, false);
+        return true;
     }
 
     /// IMU process, kf prediction, undistortion

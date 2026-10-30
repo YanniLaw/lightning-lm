@@ -12,6 +12,7 @@ namespace lightning {
 enum class LIOUpdateType {
     kPrediction,
     kScanMatched,
+    kZeroVelocity,
 };
 
 /// State produced by a LIO frontend in the local/body coordinate convention.

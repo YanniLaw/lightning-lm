@@ -17,6 +17,14 @@ wheel_odometry:
   nhc_lateral_variance: 0.01 # (m/s)^2 轮心侧向零速度软约束
   nhc_vertical_variance: 0.04 # (m/s)^2 轮心竖向零速度软约束
 
+zupt:
+  confirm_duration: 0.3 # s，连续静止确认时间
+  max_wheel_speed: 0.02 # m/s，轮心线速度模长上限
+  max_wheel_angular_speed: 0.02 # rad/s，编码器角速度模长上限
+  max_imu_angular_speed: 0.02 # rad/s，去零偏后三轴 IMU 角速度模长的 RMS 上限
+  imu_noise_multiplier: 10.0 # IMU 静止观测方差倍率
+  velocity_variance: 0.0001 # (m/s)^2，零速观测每轴方差
+
 system:
   with_rviz: true # 是否发布的RViz可视化话题
   rviz_local_map_publish_hz: 2.0 # RViz累积局部地图发布频率，<=0表示每帧发布
@@ -24,6 +32,7 @@ system:
   rviz_path_publish_hz: 10.0 # RViz轨迹发布频率
   with_loop_closing: false # 是否需要回环检测
   with_wheel_odometry_fusion: true # 是否向前端送入并融合轮速
+  with_zero_velocity_update: true # 仅轮速融合开启时生效；静止更新成功后跳过本帧雷达匹配
   with_ui: false # 是否需要3D UI
   with_2dui: false # 是否需要2D UI
   with_g2p5: true # 是否需要栅格地图
