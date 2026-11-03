@@ -35,6 +35,7 @@ add_library(core SHARED
         core/lio/keyframe_selector.cc
         core/lio/scan_accumulator.cc
         core/lio/aa-fasterlio/eskf.cc
+        core/lio/aa-fasterlio/zero_velocity_updater.cc
         core/lio/aa-fasterlio/deskew_trajectory.cc
         core/lio/aa-fasterlio/imu_processing.cc
         core/lio/aa-fasterlio/laser_mapping.cc

@@ -138,6 +138,23 @@ void ImuProcess::ProcessWithWheelOdometry(
                    kf_state.GetX().GetPose(), *scan);
 }
 
+// 静止更新已经推进滤波状态；这里只维护跨帧输入，不再积分或预处理 IMU。
+void ImuProcess::FinishStationaryScan(const MeasureGroup& meas,
+                                     const NavState& state, CloudPtr& scan) {
+  for (auto it = meas.imu_.rbegin(); it != meas.imu_.rend(); ++it) {
+    if ((*it)->timestamp <= meas.lidar_end_time_) {
+      last_imu_ = *it;
+      break;
+    }
+  }
+  last_lidar_end_time_ = meas.lidar_end_time_;
+  last_propagated_time_ = meas.lidar_end_time_;
+  angvel_last_ = last_imu_->angular_velocity - state.bg_;
+  acc_s_last_ = state.rot_ * (last_imu_->linear_acceleration - state.Getba()) +
+                state.grav_;
+  scan = meas.scan_;
+}
+
 // 原地补偿到扫描末尾的 IMU 坐标系；轨迹及参考位姿均采用真实 IMU 的 T_WI。
 void ImuProcess::DeskewPointCloud(double scan_begin_time,
                                   const DeskewTrajectory& trajectory,

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <pcl/filters/voxel_grid.h>
+#include <yaml-cpp/node/node.h>
 
 #include "common/eigen_types.h"
 #include "common/imu.h"
@@ -22,6 +23,7 @@
 #include "core/ivox3d/ivox3d.h"
 #include "core/lio/aa-fasterlio/eskf.hpp"
 #include "core/lio/aa-fasterlio/imu_processing.hpp"
+#include "core/lio/aa-fasterlio/zero_velocity_updater.h"
 #include "core/lio/keyframe_selector.h"
 #include "core/lio/lio.h"
 #include "core/lio/scan_accumulator.h"
@@ -113,6 +115,7 @@ class LaserMapping final : public LIO {
     void NotifyLIOData(const CloudPtr& cloud, const NavState& state);
 
     bool LoadParamsFromYAML(const std::string &yaml);
+    bool LoadZuptParams(const YAML::Node& yaml);
 
     /// Select a frontend-local keyframe without allocating a backend ID.
     bool SelectKeyframe();
@@ -127,6 +130,9 @@ class LaserMapping final : public LIO {
     std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
     std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // imu process
     WheelOdometryOptions wheel_options_;
+    ZeroVelocityUpdater zero_velocity_updater_;
+    // Effective enablement: ZUPT requested and wheel fusion allowed.
+    bool with_zero_velocity_update_ = false;
     IMUPtr last_prediction_imu_ = nullptr;
     DataCallback lio_data_callback_;
     ResultCallback result_callback_;

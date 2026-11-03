@@ -43,6 +43,8 @@ class ImuProcess {
 
     void ProcessWithWheelOdometry(MeasureGroup& meas, ESKF& kf_state,
                                   CloudPtr& scan, bool wheel_updates_allowed);
+    void FinishStationaryScan(const MeasureGroup& meas, const NavState& state,
+                              CloudPtr& scan);
     void ConfigureWheelSpeedObservation(const SE3& imu_from_wheel,
                                         const Vec3d& velocity_variance);
     void WheelSpeedObsModel(NavState& state,

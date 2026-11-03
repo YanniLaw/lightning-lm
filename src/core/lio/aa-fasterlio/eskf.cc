@@ -144,6 +144,8 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             lidar_obs_func_(x_, custom_obs_model_);
         } else if (obs == ObsType::WHEEL_SPEED) {
             wheelspeed_obs_func_(x_, custom_obs_model_);
+        } else if (obs == ObsType::ZERO_VELOCITY) {
+            zero_velocity_obs_func_(x_, custom_obs_model_);
         } else if (obs == ObsType::ACC_AS_GRAVITY) {
             acc_as_gravity_obs_func_(x_, custom_obs_model_);
         } else if (obs == ObsType::GPS) {

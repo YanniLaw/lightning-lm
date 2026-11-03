@@ -11,7 +11,7 @@
 
 // 1: 估计加速度计零偏；0: ba 固定为零。修改后需重新编译整个工程。
 #ifndef LIGHTNING_ESTIMATE_ACCEL_BIAS
-#define LIGHTNING_ESTIMATE_ACCEL_BIAS 0
+#define LIGHTNING_ESTIMATE_ACCEL_BIAS 1
 #endif
 
 namespace lightning {
