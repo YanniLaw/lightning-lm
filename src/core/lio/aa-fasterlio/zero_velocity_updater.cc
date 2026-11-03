@@ -58,7 +58,7 @@ double ZeroVelocityUpdater::BuildImuObservation(
          imu_scatter_energy_;
 }
 
-void ZeroVelocityUpdater::ObsModel(
+void ZeroVelocityUpdater::ZeroVelocityObsModel(
     NavState& state, ESKF::CustomObservationModel& observation) const {
   BuildImuObservation(state, observation);
   observation.valid_ = imu_sample_count_ > 0;

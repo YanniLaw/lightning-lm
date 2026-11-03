@@ -32,7 +32,7 @@ class ZeroVelocityUpdater {
 
   // Called only during TryUpdate; relinearizes the same fixed batch statistics.
   // 每次 ESKF 迭代按当前状态重新线性化，速度约束每帧只加入一次。
-  void ObsModel(NavState& state,
+  void ZeroVelocityObsModel(NavState& state,
                 ESKF::CustomObservationModel& observation) const;
 
  private:

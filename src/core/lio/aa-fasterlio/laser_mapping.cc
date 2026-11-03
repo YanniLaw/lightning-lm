@@ -95,7 +95,7 @@ bool LaserMapping::Init(const std::string& config_yaml) {
         };
     eskf_options.zero_velocity_obs_func_ =
         [this](NavState& state, ESKF::CustomObservationModel& observation) {
-          zero_velocity_updater_.ObsModel(state, observation);
+          zero_velocity_updater_.ZeroVelocityObsModel(state, observation);
         };
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
