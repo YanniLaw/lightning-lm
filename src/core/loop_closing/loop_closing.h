@@ -41,6 +41,9 @@ class LoopClosing {
         int closest_id_th_ = 50;
         double max_range_ = 30.0;
         double ndt_score_th_ = 1.0;
+        double min_overlap_ratio_ = 0.7;
+        double max_registration_rmse_ = 0.15;  // Meters, with distances capped at 0.5 m.
+        double max_gravity_direction_change_deg_ = 2.0;
     };
 
     explicit LoopClosing(Options options = Options());
@@ -91,6 +94,8 @@ class LoopClosing {
                                                   const LoopCandidate& candidate) const;
 
     void RunWhenDoneCallback();
+
+    bool PassesGeometryChecks(const LoopMatchInput& input, const Mat4f& final_pose) const;
 
     Options options_;
     Keyframe::Ptr last_loop_kf_;

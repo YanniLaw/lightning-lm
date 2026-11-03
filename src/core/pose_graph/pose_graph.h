@@ -50,6 +50,9 @@ class PoseGraph {
         int closest_id_th_ = 50;            // 历史关键帧与当前帧的ID间隔
         double max_range_ = 30.0;           // 候选帧的最大距离
         double ndt_score_th_ = 1.0;         // ndt位姿分值
+        double min_overlap_ratio_ = 0.7;
+        double max_registration_rmse_ = 0.15;
+        double max_gravity_direction_change_deg_ = 2.0;
         /// 图优化权重
         double motion_trans_noise_ = 0.1;               // 运动模型平移噪声
         double motion_rot_noise_ = 3.0 * M_PI / 180.0;  // 运动模型旋转噪声
@@ -106,11 +109,13 @@ class PoseGraph {
 
     WorkItem::Result HandleKeyframe(const Keyframe::Ptr& keyframe);
     void HandleWorkQueue(LoopClosing::MatchResult result);
+    // A null output drains work without materializing a map snapshot.
+    bool Flush(std::vector<KeyframeMapEntry>* snapshot);
     void CompleteFlush(const std::shared_ptr<FlushState>& flush_state,
                        std::vector<KeyframeMapEntry> snapshot);
 
     bool AddKeyframeToGraph(const Keyframe::Ptr& current);
-    std::size_t AddLoopConstraints(const std::vector<LoopCandidate>& constraints);
+    void AddLoopConstraints(const std::vector<LoopCandidate>& constraints);
     bool OptimizeGraph();
 
     // Caller holds graph_mutex_.

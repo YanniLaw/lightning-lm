@@ -6,6 +6,7 @@
 
 #include <glog/logging.h>
 #include <pcl/common/transforms.h>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/registration/ndt.h>
 
 #include <algorithm>
@@ -19,6 +20,39 @@
 #include "utils/thread_pool.h"
 
 namespace lightning {
+
+namespace {
+
+struct MatchGeometry {
+  double overlap_ratio = 0.0;
+  double mean_squared_error = 0.0;
+};
+
+MatchGeometry EvaluateGeometry(const pcl::KdTreeFLANN<PointType>& tree,
+                               const PointCloudType& source, const Mat4f& pose) {
+  constexpr double kOverlapSquaredDistance = 0.2 * 0.2;
+  constexpr double kMaxSquaredDistance = 0.5 * 0.5;
+  MatchGeometry geometry;
+  std::vector<int> indices(1);
+  std::vector<float> distances(1);
+  for (const auto& point : source) {
+    PointType query;
+    query.getVector3fMap() =
+        pose.block<3, 3>(0, 0) * point.getVector3fMap() + pose.block<3, 1>(0, 3);
+    double squared_distance = kMaxSquaredDistance;
+    if (tree.nearestKSearch(query, 1, indices, distances) == 1) {
+      squared_distance = std::min(kMaxSquaredDistance, static_cast<double>(distances[0]));
+    }
+    geometry.overlap_ratio += squared_distance <= kOverlapSquaredDistance;
+    // Include every source point so unmatched regions cannot lower the error.
+    geometry.mean_squared_error += squared_distance;
+  }
+  geometry.overlap_ratio /= source.size();
+  geometry.mean_squared_error /= source.size();
+  return geometry;
+}
+
+}  // namespace
 
 LoopClosing::LoopClosing(Options options) : options_(std::move(options)) {}
 
@@ -124,7 +158,7 @@ void LoopClosing::RunWhenDoneCallback() {
         done_callback = std::move(done_callback_);
         try {
             for (const auto& match : match_results_) {
-                if (match && match->ndt_score_ > options_.ndt_score_th_) {
+                if (match) {
                     match_result.constraints.emplace_back(*match);
                 }
             }
@@ -160,7 +194,7 @@ std::vector<LoopCandidate> LoopClosing::ComputeConstraints(const Keyframe::Ptr& 
     successful_candidates.reserve(inputs.size());
     for (const auto& input : inputs) {
         const auto result = ComputeMatch(input);
-        if (result && result->ndt_score_ > options_.ndt_score_th_) {
+        if (result) {
             successful_candidates.emplace_back(*result);
         }
     }
@@ -234,7 +268,6 @@ std::vector<LoopCandidate> LoopClosing::DetectLoopCandidates(const Keyframe::Ptr
         const double distance_2d = delta.head<2>().norm();
         if (distance_2d < options_.max_range_) {
             LoopCandidate candidate(keyframe->GetID(), current->GetID());
-            candidate.Tij_ = keyframe->GetLIOPose().inverse() * current->GetLIOPose();
             candidates.emplace_back(candidate);
             check_first = keyframe;
         }
@@ -317,6 +350,7 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
 
     LoopCandidate candidate = input.candidate;
     Mat4f target_pose = input.initial_source_world_pose;
+    bool converged = false;
     /// 不同分辨率下的匹配
     CloudPtr output(new PointCloudType);
     const std::vector<double> resolutions{10.0, 5.0, 2.0, 1.0};
@@ -336,22 +370,53 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
         ndt.setInputSource(rough_map2);
 
         ndt.align(*output, target_pose);
+        converged = ndt.hasConverged();
         target_pose = ndt.getFinalTransformation();
         candidate.ndt_score_ = ndt.getTransformationProbability();
         if (!target_pose.allFinite() || !std::isfinite(candidate.ndt_score_)) {
             return std::nullopt;
         }
     }
-
-    const Mat4d transformation = target_pose.cast<double>();
-    if (!transformation.allFinite()) {
+    // check if the loop candidate passes the geometry checks and the NDT score threshold
+    if (!converged || candidate.ndt_score_ <= options_.ndt_score_th_ ||
+        !PassesGeometryChecks(input, target_pose)) {
         return std::nullopt;
     }
+
+    const Mat4d transformation = target_pose.cast<double>();
     Quatd quaternion(transformation.block<3, 3>(0, 0));
     quaternion.normalize();
     const Vec3d translation = transformation.block<3, 1>(0, 3);
     candidate.Tij_ = input.reference_world_pose.inverse() * SE3(quaternion, translation);
     return candidate;
+}
+
+bool LoopClosing::PassesGeometryChecks(const LoopMatchInput& input, const Mat4f& final_pose) const {
+  pcl::KdTreeFLANN<PointType> tree;
+  tree.setInputCloud(input.target_cloud);
+  const auto initial = EvaluateGeometry(tree, *input.source_cloud, input.initial_source_world_pose);
+  const auto final = EvaluateGeometry(tree, *input.source_cloud, final_pose);
+  const double initial_rmse = std::sqrt(initial.mean_squared_error);
+  const double final_rmse = std::sqrt(final.mean_squared_error);
+
+  // Compare gravity in IMU axes: installation tilt and world yaw are unrestricted.
+  const Vec3d initial_gravity =
+      input.initial_source_world_pose.block<3, 3>(0, 0).cast<double>().transpose() * Vec3d::UnitZ();
+  const Vec3d final_gravity = final_pose.block<3, 3>(0, 0).cast<double>().transpose() * Vec3d::UnitZ();
+  const double gravity_direction_change_deg =
+      std::acos(std::clamp(initial_gravity.normalized().dot(final_gravity.normalized()), -1.0, 1.0)) *
+      180.0 / M_PI;
+  const bool accepted = final.overlap_ratio >= options_.min_overlap_ratio_ &&
+                        final_rmse <= options_.max_registration_rmse_ &&
+                        final_rmse <= 1.05 * initial_rmse &&
+                        gravity_direction_change_deg <= options_.max_gravity_direction_change_deg_;
+  if (!accepted && options_.verbose_) {
+    LOG(INFO) << "Rejected loop " << input.candidate.idx1_ << " -> " << input.candidate.idx2_
+              << ": overlap=" << final.overlap_ratio << ", capped RMS=" << initial_rmse
+              << " -> " << final_rmse << " m, gravity direction change="
+              << gravity_direction_change_deg << " deg";
+  }
+  return accepted;
 }
 
 }  // namespace lightning

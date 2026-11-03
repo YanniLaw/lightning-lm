@@ -165,57 +165,75 @@ OptimizationResult MiaoOptimizer::Optimize(int max_iterations) {
     for (const auto& [id, vertex] : vertices_) {
         estimates.emplace(id, vertex->Estimate());
     }
-
-    if (!optimizer_->InitializeOptimization()) {
-        LOG(ERROR) << "miao failed to initialize pose graph optimization";
-        return result;
-    }
-    optimizer_->SetVerbose(false);
-    const int iterations = optimizer_->Optimize(max_iterations);
-    if (iterations <= 0) {
+    const auto restore_estimates = [&]() {
         for (const auto& [id, pose] : estimates) {
             vertices_.at(id)->SetEstimate(pose);
         }
-        LOG(ERROR) << "miao failed to optimize pose graph";
-        return result;
+    };
+
+    optimizer_->SetVerbose(false);
+    for (;;) {
+        if (!optimizer_->InitializeOptimization()) {
+            restore_estimates();
+            LOG(ERROR) << "miao failed to initialize pose graph optimization";
+            return OptimizationResult();
+        }
+        const int iterations = optimizer_->Optimize(max_iterations);
+        if (iterations <= 0) {
+            restore_estimates();
+            LOG(ERROR) << "miao failed to optimize pose graph";
+            return OptimizationResult();
+        }
+        result.iterations += iterations;
+
+        for (const auto& [id, vertex] : vertices_) {
+            if (!IsValidPose(vertex->Estimate())) {
+                restore_estimates();
+                LOG(ERROR) << "miao produced a non-finite pose for node: " << id;
+                return OptimizationResult();
+            }
+        }
+
+        int removed_loops = 0;
+        for (auto& [id, loop_edge] : loop_edges_) {
+            if (loop_edge.is_outlier) {
+                continue;
+            }
+            const auto& edge = loop_edge.edge;
+            const double chi2 = edge->Chi2();
+            if (!IsFinite(chi2)) {
+                restore_estimates();
+                LOG(ERROR) << "miao produced a non-finite loop residual: " << id;
+                return OptimizationResult();
+            }
+            const double delta = edge->GetRobustKernel()->Delta();
+            if (chi2 > delta * delta) {
+                if (!optimizer_->RemoveEdge(edge)) {
+                    restore_estimates();
+                    LOG(ERROR) << "miao failed to remove loop outlier: " << id;
+                    return OptimizationResult();
+                }
+                loop_edge.is_outlier = true;
+                ++removed_loops;
+            }
+        }
+        if (removed_loops == 0) {
+            break;
+        }
+        LOG(INFO) << "Removed " << removed_loops << " loop outliers; resolving pose graph.";
+        // Start again from the original poses, before rejected loops affected them.
+        // Every retry removes an edge, so this loop is bounded by the loop count.
+        restore_estimates();
     }
 
     result.usable = true;
-    result.iterations = iterations;
     result.nodes.reserve(vertices_.size());
     for (const auto& [id, vertex] : vertices_) {
-        if (!IsValidPose(vertex->Estimate())) {
-            LOG(ERROR) << "miao produced a non-finite pose for node: " << id;
-            for (const auto& [restore_id, pose] : estimates) {
-                vertices_.at(restore_id)->SetEstimate(pose);
-            }
-            return OptimizationResult();
-        }
         result.nodes.push_back(NodeEstimate{id, vertex->Estimate()});
     }
-
     result.loops.reserve(loop_edges_.size());
-    for (auto& [id, loop_edge] : loop_edges_) {
-        const auto& edge = loop_edge.edge;
-        const double chi2 = edge->Chi2();
-        if (!IsFinite(chi2)) {
-            LOG(ERROR) << "miao produced a non-finite loop residual: " << id;
-            for (const auto& [restore_id, pose] : estimates) {
-                vertices_.at(restore_id)->SetEstimate(pose);
-            }
-            return OptimizationResult();
-        }
-        const auto robust_kernel = edge->GetRobustKernel();
-        bool is_outlier = false;
-        if (robust_kernel) {
-            is_outlier = chi2 > robust_kernel->Delta();
-            if (is_outlier) {
-                edge->SetLevel(1);
-            } else {
-                edge->SetRobustKernel(nullptr);
-            }
-        }
-        result.loops.push_back(LoopConstraintState{id, is_outlier, chi2});
+    for (const auto& [id, loop_edge] : loop_edges_) {
+        result.loops.push_back(LoopConstraintState{id, loop_edge.is_outlier, loop_edge.edge->Chi2()});
     }
     return result;
 }
