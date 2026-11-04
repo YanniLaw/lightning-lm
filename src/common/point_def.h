@@ -88,6 +88,7 @@ namespace lightning {
 using PointType = PointXYZIT;
 using PointCloudType = pcl::PointCloud<PointType>;
 using CloudPtr = PointCloudType::Ptr;
+using CloudConstPtr = PointCloudType::ConstPtr;
 using PointVec = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
 
 inline Vec3f ToVec3f(const PointType& pt) { return pt.getVector3fMap(); }

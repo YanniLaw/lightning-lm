@@ -23,12 +23,12 @@ class Keyframe {
     using Ptr = std::shared_ptr<Keyframe>;
 
     Keyframe() = default;
-    Keyframe(unsigned long id, CloudPtr cloud, NavState state)
+    Keyframe(unsigned long id, CloudConstPtr cloud, NavState state)
         : id_(id), timestamp_(state.timestamp_), cloud_(std::move(cloud)), pose_lio_(state.GetPose()),
           pose_opt_(pose_lio_), state_(std::move(state)) {}
 
     unsigned long GetID() const { return id_; }
-    CloudPtr GetCloud() const { return cloud_; }
+    CloudConstPtr GetCloud() const { return cloud_; }
 
     SE3 GetLIOPose() const {
         UL lock(data_mutex_);
@@ -67,7 +67,7 @@ class Keyframe {
     unsigned long id_ = 0;
 
     double timestamp_ = 0;
-    CloudPtr cloud_ = nullptr;  /// 降采样之后的点云
+    CloudConstPtr cloud_ = nullptr;  /// 降采样之后的只读点云
 
     mutable std::mutex data_mutex_;
     SE3 pose_lio_;  // 前端的pose

@@ -10,7 +10,7 @@
 namespace lightning {
 
 /// 体素滤波
-CloudPtr VoxelGrid(CloudPtr cloud, float voxel_size) {
+CloudPtr VoxelGrid(CloudConstPtr cloud, float voxel_size) {
     pcl::VoxelGrid<PointType> voxel;
     voxel.setLeafSize(voxel_size, voxel_size, voxel_size);
     voxel.setInputCloud(cloud);

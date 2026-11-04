@@ -77,30 +77,24 @@ void LoopClosing::ScheduleMatches(std::vector<LoopMatchInput> inputs) {
     CHECK(thread_pool_ != nullptr);
     CHECK(!done_callback_);
 
-    try {
-        for (const LoopMatchInput& input : inputs) {
-            match_results_.emplace_back(std::nullopt);
-            std::optional<LoopCandidate>* const result_slot = &match_results_.back();
+    for (const LoopMatchInput& input : inputs) {
+        match_results_.emplace_back(std::nullopt);
+        std::optional<LoopCandidate>* const result_slot = &match_results_.back();
 
-            auto match_task = std::make_unique<Task>();
-            match_task->SetWorkItem([this, input, result_slot]() {
-                try {
-                    *result_slot = ComputeMatch(input);
-                } catch (const std::exception& exception) {
-                    LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
-                               << input.candidate.idx2_ << ": " << exception.what();
-                } catch (...) {
-                    LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
-                               << input.candidate.idx2_ << " with an unknown exception";
-                }
-            });
+        auto match_task = std::make_unique<Task>();
+        match_task->SetWorkItem([this, input, result_slot]() {
+            try {
+                *result_slot = ComputeMatch(input);
+            } catch (const std::exception& exception) {
+                LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
+                           << input.candidate.idx2_ << ": " << exception.what();
+            } catch (...) {
+                LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
+                           << input.candidate.idx2_ << " with an unknown exception";
+            }
+        });
 
-            finish_node_task_->AddDependency(thread_pool_->Schedule(std::move(match_task)));
-        }
-    } catch (const std::exception& exception) {
-        LOG(FATAL) << "failed to construct loop-match task dependencies: " << exception.what();
-    } catch (...) {
-        LOG(FATAL) << "failed to construct loop-match task dependencies";
+        finish_node_task_->AddDependency(thread_pool_->Schedule(std::move(match_task)));
     }
 }
 
@@ -156,16 +150,10 @@ void LoopClosing::RunWhenDoneCallback() {
         std::lock_guard<std::mutex> lock(match_mutex_);
         CHECK(done_callback_);
         done_callback = std::move(done_callback_);
-        try {
-            for (const auto& match : match_results_) {
-                if (match) {
-                    match_result.constraints.emplace_back(*match);
-                }
+        for (const auto& match : match_results_) {
+            if (match) {
+                match_result.constraints.emplace_back(*match);
             }
-        } catch (const std::exception& exception) {
-            LOG(FATAL) << "failed to collect loop-match results: " << exception.what();
-        } catch (...) {
-            LOG(FATAL) << "failed to collect loop-match results with an unknown exception";
         }
         LOG_IF(INFO, match_results_.size() > 0) << match_results_.size() 
             << " computations resulted in " << match_result.constraints.size() 
@@ -174,13 +162,7 @@ void LoopClosing::RunWhenDoneCallback() {
         done_callback_ = nullptr;
     }
 
-    try {
-        done_callback(std::move(match_result));
-    } catch (const std::exception& exception) {
-        LOG(FATAL) << "loop-match completion callback failed: " << exception.what();
-    } catch (...) {
-        LOG(FATAL) << "loop-match completion callback failed with an unknown exception";
-    }
+    done_callback(std::move(match_result));
 }
 
 std::vector<LoopCandidate> LoopClosing::ComputeConstraints(const Keyframe::Ptr& current,
@@ -236,8 +218,8 @@ std::vector<LoopCandidate> LoopClosing::DetectLoopCandidates(const Keyframe::Ptr
                           : static_cast<std::uint64_t>(rhs - lhs);
     };
 
-    if (last_loop_kf_ == nullptr) {
-        last_loop_kf_ = current;
+    if (!has_received_keyframe_) {
+        has_received_keyframe_ = true;
         return candidates;
     }
 
@@ -273,14 +255,6 @@ std::vector<LoopCandidate> LoopClosing::DetectLoopCandidates(const Keyframe::Ptr
         }
     }
 
-    if (!candidates.empty()) {
-        last_loop_kf_ = current;
-    }
-
-    if (options_.verbose_ && !candidates.empty()) {
-        LOG(INFO) << "lc candi: " << candidates.size();
-    }
-
     return candidates;
 }
 
@@ -310,7 +284,7 @@ std::optional<LoopMatchInput> LoopClosing::BuildMatchInput(const KeyframeCollect
             }
 
             const auto& keyframe = keyframe_list[keyframe_index];
-            const CloudPtr cloud = keyframe->GetCloud();
+            const auto cloud = keyframe->GetCloud();
             if (!cloud || cloud->empty()) {
                 continue;
             }
@@ -328,7 +302,7 @@ std::optional<LoopMatchInput> LoopClosing::BuildMatchInput(const KeyframeCollect
     };
 
     const CloudPtr submap_keyframe1 = build_submap(keyframe1->GetID(), true);
-    const CloudPtr submap_keyframe2 = keyframe2->GetCloud();
+    const auto submap_keyframe2 = keyframe2->GetCloud();
     if (!submap_keyframe2 || submap_keyframe1->empty() || submap_keyframe2->empty()) {
         return std::nullopt;
     }
@@ -350,6 +324,7 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
 
     LoopCandidate candidate = input.candidate;
     Mat4f target_pose = input.initial_source_world_pose;
+    double ndt_score = 0.0;
     bool converged = false;
     /// 不同分辨率下的匹配
     CloudPtr output(new PointCloudType);
@@ -372,13 +347,13 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
         ndt.align(*output, target_pose);
         converged = ndt.hasConverged();
         target_pose = ndt.getFinalTransformation();
-        candidate.ndt_score_ = ndt.getTransformationProbability();
-        if (!target_pose.allFinite() || !std::isfinite(candidate.ndt_score_)) {
+        ndt_score = ndt.getTransformationProbability();
+        if (!target_pose.allFinite() || !std::isfinite(ndt_score)) {
             return std::nullopt;
         }
     }
     // check if the loop candidate passes the geometry checks and the NDT score threshold
-    if (!converged || candidate.ndt_score_ <= options_.ndt_score_th_ ||
+    if (!converged || ndt_score <= options_.ndt_score_th_ ||
         !PassesGeometryChecks(input, target_pose)) {
         return std::nullopt;
     }

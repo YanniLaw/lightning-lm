@@ -98,7 +98,7 @@ class LoopClosing {
     bool PassesGeometryChecks(const LoopMatchInput& input, const Mat4f& final_pose) const;
 
     Options options_;
-    Keyframe::Ptr last_loop_kf_;
+    bool has_received_keyframe_ = false;
     int keyframes_since_detection_ = 0;
 
     mutable std::mutex match_mutex_;

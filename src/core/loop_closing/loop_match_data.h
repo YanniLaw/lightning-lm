@@ -13,8 +13,8 @@ namespace lightning {
 
 struct LoopMatchInput {
     LoopCandidate candidate;
-    CloudPtr target_cloud;
-    CloudPtr source_cloud;
+    CloudConstPtr target_cloud;
+    CloudConstPtr source_cloud;
     SE3 reference_world_pose;
     Mat4f initial_source_world_pose = Mat4f::Identity();
 };

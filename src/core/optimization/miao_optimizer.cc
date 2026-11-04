@@ -184,7 +184,6 @@ OptimizationResult MiaoOptimizer::Optimize(int max_iterations) {
             LOG(ERROR) << "miao failed to optimize pose graph";
             return OptimizationResult();
         }
-        result.iterations += iterations;
 
         for (const auto& [id, vertex] : vertices_) {
             if (!IsValidPose(vertex->Estimate())) {

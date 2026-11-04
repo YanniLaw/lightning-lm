@@ -48,7 +48,6 @@ struct LoopConstraintState {
 
 struct OptimizationResult {
     bool usable = false;
-    int iterations = 0;
     std::vector<NodeEstimate> nodes;
     std::vector<LoopConstraintState> loops;
 };

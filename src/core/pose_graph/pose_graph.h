@@ -43,16 +43,9 @@ class PoseGraph {
         bool enable_loop_closing_ = true;       // 是否启用回环检测
         std::string optimizer_type_ = "miao";   // 优化器类型
 
-        int detection_interval_ = 20;       // 每隔多少个关键帧检查一次
+        LoopClosing::Options loop_closing_;
         int optimize_every_n_nodes_ = 20;   // 每隔多少个节点进行一次优化
         int num_threads_ = 2;               // 后端线程池线程数
-        int min_id_interval_ = 20;          // 被检查的关键帧ID间隔
-        int closest_id_th_ = 50;            // 历史关键帧与当前帧的ID间隔
-        double max_range_ = 30.0;           // 候选帧的最大距离
-        double ndt_score_th_ = 1.0;         // ndt位姿分值
-        double min_overlap_ratio_ = 0.7;
-        double max_registration_rmse_ = 0.15;
-        double max_gravity_direction_change_deg_ = 2.0;
         /// 图优化权重
         double motion_trans_noise_ = 0.1;               // 运动模型平移噪声
         double motion_rot_noise_ = 3.0 * M_PI / 180.0;  // 运动模型旋转噪声
