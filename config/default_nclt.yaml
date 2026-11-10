@@ -71,15 +71,49 @@ system:
   pub_tf: true
 
 loop_closing:
+  descriptor_type: "none"  # none: 按位置距离搜索；std: STD 描述子检索
   loop_kf_gap: 50       # 兼容旧配置；检测间隔请使用 detection_interval
   detection_interval: 50
   optimize_every_n_nodes: 20
   num_threads: 2
   min_id_interval: 20   # 被检查的关键帧ID间隔
-  closest_id_th: 50     # 历史关键帧与当前帧的ID间隔
+  closest_id_th: 50     # 距离搜索模式下历史关键帧与当前帧的ID间隔
   max_range: 30.0       # 候选帧的最大距离
   ndt_score_th: 1.0     # ndt位姿分值
   with_height: true
+
+descriptor:
+  std:
+    # pre process
+    ds_size: 0.25
+    maximum_corner_num: 500
+
+    # key points
+    plane_detection_thre: 0.01
+    plane_merge_normal_thre: 0.1
+    voxel_size: 1
+    voxel_init_num: 10
+    proj_image_resolution: 0.25
+    proj_dis_min: 0
+    proj_dis_max: 5
+    corner_thre: 10
+
+    # std descriptor
+    descriptor_near_num: 15
+    descriptor_min_len: 2
+    descriptor_max_len: 30
+    non_max_suppression_radius: 2
+    std_side_resolution: 0.2
+
+    # candidate search
+    skip_near_num: 50 # 跳过后端关键帧 ID 差 <= 此值的参考帧
+    candidate_num: 50
+    sub_frame_num: 10 # 每组累积和检测使用的后端关键帧数
+    vertex_diff_threshold: 0.8
+    rough_dis_threshold: 0.015
+    normal_threshold: 0.2
+    dis_threshold: 0.5
+    icp_threshold: 0.2
 
 
 ### localization ================================================================================================

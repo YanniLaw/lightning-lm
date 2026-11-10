@@ -16,10 +16,50 @@
 #include <utility>
 
 #include "core/lio/lio_result_conversion.h"
+#include "core/descriptor/descriptor_factory.h"
 #include "core/optimization/optimizer_factory.h"
 #include "utils/thread_pool.h"
 
 namespace lightning {
+namespace {
+
+bool LoadDescriptorOptions(const YAML::Node& config, LoopClosing::Options* options) {
+  try {
+    const YAML::Node loop_config = config ? config["loop_closing"] : YAML::Node();
+    if (loop_config && loop_config["descriptor_type"]) {
+      options->descriptor_type_ = loop_config["descriptor_type"].as<std::string>();
+    }
+    if (options->descriptor_type_ == "none") {
+      return true;
+    }
+    const YAML::Node descriptors = config ? config["descriptor"] : YAML::Node();
+    const YAML::Node node =
+        descriptors ? descriptors[options->descriptor_type_] : YAML::Node();
+    if (node) {
+      if (node["sub_frame_num"]) {
+        options->descriptor_submap_keyframes_ = node["sub_frame_num"].as<int>();
+      }
+      if (node["ds_size"]) {
+        options->descriptor_downsample_resolution_ = node["ds_size"].as<double>();
+      }
+      if (node["skip_near_num"]) {
+        options->descriptor_skip_near_num_ = node["skip_near_num"].as<int>();
+      }
+    }
+  } catch (const YAML::Exception& exception) {
+    LOG(ERROR) << "invalid loop descriptor configuration: " << exception.what();
+    return false;
+  }
+  if (options->descriptor_submap_keyframes_ < 1 || options->descriptor_skip_near_num_ < 0 ||
+      !std::isfinite(options->descriptor_downsample_resolution_) ||
+      options->descriptor_downsample_resolution_ <= 0.0) {
+    LOG(ERROR) << "invalid common loop descriptor settings";
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 PoseGraph::PoseGraph(Options options) : options_(std::move(options)) {}
 
@@ -84,8 +124,13 @@ bool PoseGraph::Init(const std::string& yaml_path) {
         }
     }
 
+    if (options_.enable_loop_closing_ && !LoadDescriptorOptions(config, &loop_options)) {
+        LOG(ERROR) << "Failed to load descriptor options";
+        return false;
+    }
     if (options_.num_threads_ <= 0 || options_.optimize_every_n_nodes_ <= 0 ||
-        (options_.enable_loop_closing_ && loop_options.detection_interval_ <= 0)) {
+        (options_.enable_loop_closing_ && loop_options.descriptor_type_ == "none" &&
+         loop_options.detection_interval_ <= 0)) {
         LOG(ERROR) << "invalid pose graph scheduling options";
         return false;
     }
@@ -101,8 +146,17 @@ bool PoseGraph::Init(const std::string& yaml_path) {
     }
 
     if (options_.enable_loop_closing_) {
+        const YAML::Node descriptor_config =
+            loop_options.descriptor_type_ != "none" ? config["descriptor"] : YAML::Node();
+        auto descriptor = CreateLoopDescriptor(loop_options.descriptor_type_, descriptor_config);
+        if (loop_options.descriptor_type_ != "none" && !descriptor) {
+            LOG(ERROR) << "Failed to create loop descriptor";
+            return false;
+        }
         loop_options.verbose_ = options_.verbose_;
         loop_closing_.SetOptions(loop_options);
+        loop_closing_.SetDescriptor(std::move(descriptor));
+        LOG(INFO) << "loop descriptor: " << loop_options.descriptor_type_;
 
         optimizer_ = CreateGraphOptimizer(options_.optimizer_type_);
         if (!optimizer_) {
@@ -319,7 +373,6 @@ void PoseGraph::DrainWorkQueue() {
 }
 
 WorkItem::Result PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
-    std::vector<LoopMatchInput> inputs;
     DataCallback data_callback;
     PoseGraphDataPtr data_snapshot;
     bool should_optimize = false;
@@ -341,9 +394,6 @@ WorkItem::Result PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
 
         }
 
-        if (options_.enable_loop_closing_) {
-            inputs = loop_closing_.PrepareMatches(keyframe, keyframes_);
-        }
         ++unoptimized_nodes_;
         data_callback = data_callback_;
         if (data_callback) {
@@ -354,6 +404,9 @@ WorkItem::Result PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
     }
 
     if (options_.enable_loop_closing_) {
+        // Keyframes and poses are stable within this serial work item. Keep
+        // descriptor preparation outside the mutex used by map snapshots.
+        auto inputs = loop_closing_.PrepareMatches(keyframe, keyframes_);
         loop_closing_.ScheduleMatches(std::move(inputs));
         loop_closing_.NotifyEndOfNode();
     }

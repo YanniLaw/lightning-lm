@@ -103,18 +103,52 @@ g2p5:
   grid_map_resolution: 0.2 # 栅格地图分辨率
 
 loop_closing:
+  descriptor_type: "std"  # none: 按位置距离搜索；std: STD 描述子检索
   loop_kf_gap: 20       # 兼容旧配置；检测间隔请使用 detection_interval
-  detection_interval: 20
+  detection_interval: 20 # 仅距离搜索；STD 检测间隔使用 sub_frame_num
   optimize_every_n_nodes: 20
   num_threads: 6
   min_id_interval: 20   # 被检查的关键帧ID间隔
-  closest_id_th: 50     # 历史关键帧与当前帧的ID间隔
+  closest_id_th: 50     # 距离搜索模式下历史关键帧与当前帧的ID间隔
   max_range: 10.0       # 候选帧的最大距离
   ndt_score_th: 1.3     # ndt位姿分值
   min_overlap_ratio: 0.65 # 最近邻距离不超过 0.2 m 的源点比例下限
-  max_registration_rmse: 0.15 # m，所有源点计入 RMS，最近邻距离截断为 0.5 m
+  max_registration_rmse: 0.2 # m，仅统计最近邻距离不超过 0.5 m 的有效对应点 RMS
   max_gravity_direction_change_deg: 3.0 # 回环配准前后重力方向的最大夹角，度
   with_height: true
+
+descriptor:
+  std:
+    # pre process
+    ds_size: 0.25
+    maximum_corner_num: 200
+
+    # key points
+    plane_detection_thre: 0.01
+    plane_merge_normal_thre: 0.1
+    voxel_size: 1
+    voxel_init_num: 10
+    proj_image_resolution: 0.25
+    proj_dis_min: 0.1
+    proj_dis_max: 3
+    corner_thre: 10
+
+    # std descriptor
+    descriptor_near_num: 15
+    descriptor_min_len: 1
+    descriptor_max_len: 20
+    non_max_suppression_radius: 1
+    std_side_resolution: 0.1
+
+    # candidate search
+    skip_near_num: 50 # 跳过后端关键帧 ID 差 <= 此值的参考帧
+    candidate_num: 50
+    sub_frame_num: 10 # 每组累积和检测使用的后端关键帧数
+    vertex_diff_threshold: 0.5
+    rough_dis_threshold: 0.015
+    normal_threshold: 0.2
+    dis_threshold: 0.3
+    icp_threshold: 0.4
 
 
 ### localization ================================================================================================

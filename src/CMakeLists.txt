@@ -4,6 +4,11 @@ lightning_get_ui_sources(LIGHTNING_UI_SOURCES "${LIGHTNING_WITH_PANGOLIN}")
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
 add_subdirectory(core/miao)
 
+add_library(std_descriptor STATIC
+        ${PROJECT_SOURCE_DIR}/src/core/descriptor/std/STDesc.cpp
+)
+target_link_libraries(std_descriptor ${PCL_LIBRARIES} Eigen3::Eigen)
+
 add_library(common SHARED
         common/nav_state.cc
         common/options.cc
@@ -41,6 +46,8 @@ add_library(core SHARED
         core/lio/aa-fasterlio/laser_mapping.cc
         core/pose_graph/keyframe_collection.cc
         core/loop_closing/loop_closing.cc
+        core/descriptor/descriptor_factory.cc
+        core/descriptor/std_descriptor.cc
         core/optimization/miao_optimizer.cc
         core/optimization/optimizer_factory.cc
         core/pose_graph/pose_graph.cc
@@ -75,6 +82,7 @@ add_library(core SHARED
 
 target_link_libraries(core
         ${LIGHTNING_BASE_LIBS}
+        std_descriptor
         common
         miao.core
         miao.utils

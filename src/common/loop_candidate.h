@@ -18,7 +18,7 @@ struct LoopCandidate {
 
     uint64_t idx1_ = 0;
     uint64_t idx2_ = 0;
-    SE3 Tij_;
+    SE3 Tij_;  // Final query-to-reference constraint after registration.
 };
 
 }  // namespace lightning
