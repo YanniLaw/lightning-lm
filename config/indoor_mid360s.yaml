@@ -104,6 +104,7 @@ g2p5:
 
 loop_closing:
   descriptor_type: "std"  # none: 距离搜索； std: STD 描述子； scan_context: Scan Context 描述子
+  loop_cloud_dir: " "  # 填写输出目录以保存通过几何验收的回环点云 ./data/loop_clouds
   loop_kf_gap: 20       # 兼容旧配置；检测间隔请使用 detection_interval
   detection_interval: 20 # 仅距离搜索；描述子检测间隔使用 sub_frame_num
   optimize_every_n_nodes: 20

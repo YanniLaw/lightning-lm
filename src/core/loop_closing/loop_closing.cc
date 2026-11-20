@@ -6,14 +6,19 @@
 
 #include <glog/logging.h>
 #include <pcl/common/transforms.h>
+#include <pcl/exceptions.h>
+#include <pcl/io/pcd_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/registration/ndt.h>
 
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <filesystem>
 #include <limits>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <utility>
 
 #include "core/pose_graph/keyframe_collection.h"
@@ -57,6 +62,37 @@ MatchGeometry EvaluateGeometry(const pcl::KdTreeFLANN<PointType>& tree,
           ? geometry.mean_squared_error / correspondence_count
           : std::numeric_limits<double>::infinity();
   return geometry;
+}
+
+void SaveLoopClouds(const std::string& output_dir, const LoopMatchInput& input,
+                    const Mat4f& map_from_query) {
+  const auto pair_dir = std::filesystem::path(output_dir) /
+                        (std::to_string(input.candidate.idx1_) + "_" +
+                         std::to_string(input.candidate.idx2_));
+  std::error_code error;
+  if (!std::filesystem::create_directories(pair_dir, error)) {
+    LOG(WARNING) << "Could not create loop cloud directory " << pair_dir << ": "
+                 << (error ? error.message() : "directory already exists");
+    return;
+  }
+
+  PointCloudType aligned_query;
+  pcl::transformPointCloud(*input.source_cloud, aligned_query, map_from_query);
+  const auto reference_path = (pair_dir / "reference.pcd").string();
+  const auto query_path = (pair_dir / "query_aligned.pcd").string();
+  try {
+    if (pcl::io::savePCDFileBinaryCompressed(reference_path,
+                                            *input.target_cloud) == 0 &&
+        pcl::io::savePCDFileBinaryCompressed(query_path, aligned_query) == 0) {
+      LOG(INFO) << "Saved loop clouds to " << pair_dir;
+      return;
+    }
+    LOG(WARNING) << "Could not write loop clouds to " << pair_dir;
+  } catch (const pcl::IOException& exception) {
+    LOG(WARNING) << "Could not write loop clouds to " << pair_dir << ": "
+                 << exception.what();
+  }
+  std::filesystem::remove_all(pair_dir, error);
 }
 
 }  // namespace
@@ -451,6 +487,9 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
     quaternion.normalize();
     const Vec3d translation = transformation.block<3, 1>(0, 3);
     candidate.Tij_ = input.reference_world_pose.inverse() * SE3(quaternion, translation);
+    if (!options_.loop_cloud_dir_.empty()) {
+        SaveLoopClouds(options_.loop_cloud_dir_, input, target_pose);
+    }
     return candidate;
 }
 

@@ -119,6 +119,10 @@ bool PoseGraph::Init(const std::string& yaml_path) {
             loop_options.max_gravity_direction_change_deg_ =
                 loop_config["max_gravity_direction_change_deg"].as<double>();
         }
+        if (loop_config["loop_cloud_dir"]) {
+            loop_options.loop_cloud_dir_ =
+                loop_config["loop_cloud_dir"].as<std::string>();
+        }
         if (loop_config["with_height"]) {
             options_.with_height_ = loop_config["with_height"].as<bool>();
         }

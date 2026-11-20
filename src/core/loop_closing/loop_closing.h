@@ -51,6 +51,7 @@ class LoopClosing {
         // RMS in meters over correspondences within 0.5 m.
         double max_registration_rmse_ = 0.15;
         double max_gravity_direction_change_deg_ = 2.0;
+        std::string loop_cloud_dir_;
     };
 
     explicit LoopClosing(Options options = Options());
