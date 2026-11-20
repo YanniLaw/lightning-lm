@@ -9,6 +9,13 @@ add_library(std_descriptor STATIC
 )
 target_link_libraries(std_descriptor ${PCL_LIBRARIES} Eigen3::Eigen)
 
+add_library(scan_context STATIC
+        ${PROJECT_SOURCE_DIR}/src/core/descriptor/scan_context/Scancontext.cpp
+)
+set_target_properties(scan_context PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(scan_context PUBLIC ${PROJECT_SOURCE_DIR}/src/core/descriptor/scan_context)
+target_link_libraries(scan_context ${PCL_LIBRARIES} Eigen3::Eigen)
+
 add_library(common SHARED
         common/nav_state.cc
         common/options.cc
@@ -48,6 +55,7 @@ add_library(core SHARED
         core/loop_closing/loop_closing.cc
         core/descriptor/descriptor_factory.cc
         core/descriptor/std_descriptor.cc
+        core/descriptor/scan_context_descriptor.cc
         core/optimization/miao_optimizer.cc
         core/optimization/optimizer_factory.cc
         core/pose_graph/pose_graph.cc
@@ -83,6 +91,7 @@ add_library(core SHARED
 target_link_libraries(core
         ${LIGHTNING_BASE_LIBS}
         std_descriptor
+        scan_context
         common
         miao.core
         miao.utils

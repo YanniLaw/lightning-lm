@@ -21,6 +21,8 @@ struct LoopMatchInput {
     Mat4f initial_source_world_pose = Mat4f::Identity();
     // Optional descriptor guess; geometry checks retain the original baseline.
     std::optional<Mat4f> registration_guess;
+    // Map-from-query rotation when a descriptor does not estimate translation.
+    std::optional<SO3> registration_rotation_guess;
 };
 
 }  // namespace lightning

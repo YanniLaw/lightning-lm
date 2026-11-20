@@ -85,7 +85,7 @@ std::vector<LoopDescriptor::Match> StdDescriptor::DetectAndAdd(
   const SE3 reference_from_query =
       local_poses_.at(result.first).inverse() *
       SE3(SO3(local_correction.second), local_correction.first) * local_from_query;
-  return {{reference_id, reference_from_query}};
+  return {{reference_id, reference_from_query, std::nullopt}};
 }
 
 }  // namespace lightning

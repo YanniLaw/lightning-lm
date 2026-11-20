@@ -103,9 +103,9 @@ g2p5:
   grid_map_resolution: 0.2 # 栅格地图分辨率
 
 loop_closing:
-  descriptor_type: "std"  # none: 按位置距离搜索；std: STD 描述子检索
+  descriptor_type: "std"  # none: 距离搜索； std: STD 描述子； scan_context: Scan Context 描述子
   loop_kf_gap: 20       # 兼容旧配置；检测间隔请使用 detection_interval
-  detection_interval: 20 # 仅距离搜索；STD 检测间隔使用 sub_frame_num
+  detection_interval: 20 # 仅距离搜索；描述子检测间隔使用 sub_frame_num
   optimize_every_n_nodes: 20
   num_threads: 6
   min_id_interval: 20   # 被检查的关键帧ID间隔
@@ -149,6 +149,19 @@ descriptor:
     normal_threshold: 0.2
     dis_threshold: 0.3
     icp_threshold: 0.4
+
+  scan_context:
+    ds_size: 0.25                  # 每帧体素下采样，米
+    sub_frame_num: 10             # 每组累积和检测的后端关键帧数
+    skip_near_num: 50             # 排除关键帧 ID 差 <= 此值的历史帧
+    pc_num_ring: 20               # 径向环数
+    pc_num_sector: 60             # 方位扇区数
+    pc_max_radius: 20.0           # 最大水平半径，米
+    lidar_height: 0.165           # 真实 IMU 原点离地高度，米（根据外参估算）
+    num_candidates_from_tree: 10  # ring key 候选数上限
+    search_ratio: 0.1             # 航向粗对齐后的搜索比例
+    sc_dist_thres: 0.2           # 描述子距离阈值，越小越严格
+    tree_making_period: 1         # 有可搜索历史时的描述子查询次数
 
 
 ### localization ================================================================================================

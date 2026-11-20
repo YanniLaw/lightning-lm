@@ -203,7 +203,7 @@ std::vector<LoopMatchInput> LoopClosing::PrepareMatches(const Keyframe::Ptr& cur
         return {};
     }
 
-    // STD processes complete consecutive windows; geometry keeps its own cadence.
+    // Descriptors process complete consecutive windows; geometry keeps its own cadence.
     const int detection_interval =
         descriptor_ ? options_.descriptor_submap_keyframes_ : options_.detection_interval_;
     const bool first_keyframe = !has_received_keyframe_;
@@ -241,6 +241,9 @@ std::vector<LoopMatchInput> LoopClosing::PrepareMatches(const Keyframe::Ptr& cur
                 if (match.reference_from_query) {
                     input->registration_guess =
                         (input->reference_world_pose * *match.reference_from_query).matrix().cast<float>();
+                } else if (match.reference_from_query_rotation) {
+                    input->registration_rotation_guess =
+                        input->reference_world_pose.so3() * *match.reference_from_query_rotation;
                 }
                 inputs.emplace_back(std::move(*input));
             }
@@ -401,9 +404,15 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
 
     LoopCandidate candidate = input.candidate;
     Mat4f target_pose = input.registration_guess.value_or(input.initial_source_world_pose);
+    if (!input.registration_guess && input.registration_rotation_guess) {
+        target_pose.block<3, 3>(0, 0) = input.registration_rotation_guess->matrix().cast<float>();
+        // Start at the retrieved place; NDT estimates the remaining offset.
+        target_pose.block<3, 1>(0, 3) =
+            input.reference_world_pose.translation().cast<float>();
+    }
     double ndt_score = 0.0;
     bool converged = false;
-    // A complete descriptor pose needs local refinement; geometry retains coarse search.
+    // A complete descriptor pose needs local refinement; other inputs retain coarse search.
     CloudPtr output(new PointCloudType);
     const std::vector<double> resolutions = input.registration_guess
                                               ? std::vector<double>{1.0}

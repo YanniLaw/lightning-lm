@@ -19,6 +19,8 @@ class LoopDescriptor {
     std::uint64_t reference_id = 0;
     // Query IMU coordinates to reference IMU coordinates, when available.
     std::optional<SE3> reference_from_query;
+    // Rotation-only query IMU to reference IMU estimate, when available.
+    std::optional<SO3> reference_from_query_rotation;
   };
 
   virtual ~LoopDescriptor() = default;

@@ -10,20 +10,55 @@
 #include <initializer_list>
 #include <type_traits>
 
+#include "core/descriptor/scan_context_descriptor.h"
 #include "core/descriptor/std_descriptor.h"
 
 namespace lightning {
+namespace {
 
-std::unique_ptr<LoopDescriptor> CreateLoopDescriptor(
-    const std::string& type, const YAML::Node& descriptor_config) {
-  if (type == "none") {
+std::unique_ptr<LoopDescriptor> CreateScanContextDescriptor(
+    const YAML::Node& descriptor_config) {
+  ScanContextDescriptor::Options options;
+  try {
+    const YAML::Node node =
+        descriptor_config ? descriptor_config["scan_context"] : YAML::Node();
+    if (!node || !node["lidar_height"] || node["lidar_height"].IsNull()) {
+      LOG(ERROR) << "Scan Context requires lidar_height";
+      return nullptr;
+    }
+    const auto read = [&node](const char* name, auto& value) {
+      if (node[name]) {
+        value = node[name].as<std::decay_t<decltype(value)>>();
+      }
+    };
+    read("pc_num_ring", options.pc_num_ring);
+    read("pc_num_sector", options.pc_num_sector);
+    read("pc_max_radius", options.pc_max_radius);
+    read("lidar_height", options.lidar_height);
+    read("num_candidates_from_tree", options.num_candidates_from_tree);
+    read("search_ratio", options.search_ratio);
+    read("sc_dist_thres", options.sc_dist_thres);
+    read("tree_making_period", options.tree_making_period);
+  } catch (const YAML::Exception& exception) {
+    LOG(ERROR) << "Invalid Scan Context configuration: " << exception.what();
     return nullptr;
   }
-  if (type != "std") {
-    LOG(ERROR) << "Unsupported loop descriptor: " << type;
+
+  if (options.pc_num_ring < 1 || options.pc_num_sector < 1 ||
+      options.num_candidates_from_tree < 1 || options.tree_making_period < 1 ||
+      !std::isfinite(options.pc_max_radius) || options.pc_max_radius <= 0.0 ||
+      !std::isfinite(options.lidar_height) || options.lidar_height < 0.0 ||
+      !std::isfinite(options.search_ratio) || options.search_ratio < 0.0 ||
+      options.search_ratio > 1.0 || !std::isfinite(options.sc_dist_thres) ||
+      options.sc_dist_thres <= 0.0 || options.sc_dist_thres > 2.0) {
+    LOG(ERROR) << "Invalid Scan Context settings";
     return nullptr;
   }
+  return std::make_unique<ScanContextDescriptor>(options);
+}
 
+std::unique_ptr<LoopDescriptor> CreateStdDescriptor(
+    const YAML::Node& descriptor_config) {
   StdDescriptor::Options options;
   try {
     const YAML::Node node =
@@ -86,6 +121,23 @@ std::unique_ptr<LoopDescriptor> CreateLoopDescriptor(
     return nullptr;
   }
   return std::make_unique<StdDescriptor>(options);
+}
+
+}  // namespace
+
+std::unique_ptr<LoopDescriptor> CreateLoopDescriptor(
+    const std::string& type, const YAML::Node& descriptor_config) {
+  if (type == "none") {
+    return nullptr;
+  }
+  if (type == "std") {
+    return CreateStdDescriptor(descriptor_config);
+  }
+  if (type == "scan_context") {
+    return CreateScanContextDescriptor(descriptor_config);
+  }
+  LOG(ERROR) << "Unsupported loop descriptor: " << type;
+  return nullptr;
 }
 
 }  // namespace lightning
