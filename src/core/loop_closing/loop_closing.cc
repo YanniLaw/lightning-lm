@@ -6,12 +6,19 @@
 
 #include <glog/logging.h>
 #include <pcl/common/transforms.h>
+#include <pcl/exceptions.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/registration/ndt.h>
 
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <filesystem>
+#include <limits>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <utility>
 
 #include "core/pose_graph/keyframe_collection.h"
@@ -19,6 +26,76 @@
 #include "utils/thread_pool.h"
 
 namespace lightning {
+
+namespace {
+
+struct MatchGeometry {
+  double overlap_ratio = 0.0;
+  double mean_squared_error = 0.0;
+};
+
+MatchGeometry EvaluateGeometry(const pcl::KdTreeFLANN<PointType>& tree,
+                               const PointCloudType& source, const Mat4f& pose) {
+  constexpr double kOverlapSquaredDistance = 0.2 * 0.2;
+  constexpr double kMaxCorrespondenceSquaredDistance = 0.5 * 0.5;
+  MatchGeometry geometry;
+  std::size_t correspondence_count = 0;
+  std::vector<int> indices(1);
+  std::vector<float> distances(1);
+  for (const auto& point : source) {
+    PointType query;
+    query.getVector3fMap() =
+        pose.block<3, 3>(0, 0) * point.getVector3fMap() + pose.block<3, 1>(0, 3);
+    if (tree.nearestKSearch(query, 1, indices, distances) != 1 ||
+        distances[0] > kMaxCorrespondenceSquaredDistance) {
+      continue;
+    }
+    const double squared_distance = distances[0];
+    geometry.overlap_ratio += squared_distance <= kOverlapSquaredDistance;
+    geometry.mean_squared_error += squared_distance;
+    ++correspondence_count;
+  }
+  // Coverage uses every source point; error uses only valid correspondences.
+  geometry.overlap_ratio /= source.size();
+  geometry.mean_squared_error =
+      correspondence_count > 0
+          ? geometry.mean_squared_error / correspondence_count
+          : std::numeric_limits<double>::infinity();
+  return geometry;
+}
+
+void SaveLoopClouds(const std::string& output_dir, const LoopMatchInput& input,
+                    const Mat4f& map_from_query) {
+  const auto pair_dir = std::filesystem::path(output_dir) /
+                        (std::to_string(input.candidate.idx1_) + "_" +
+                         std::to_string(input.candidate.idx2_));
+  std::error_code error;
+  if (!std::filesystem::create_directories(pair_dir, error)) {
+    LOG(WARNING) << "Could not create loop cloud directory " << pair_dir << ": "
+                 << (error ? error.message() : "directory already exists");
+    return;
+  }
+
+  PointCloudType aligned_query;
+  pcl::transformPointCloud(*input.source_cloud, aligned_query, map_from_query);
+  const auto reference_path = (pair_dir / "reference.pcd").string();
+  const auto query_path = (pair_dir / "query_aligned.pcd").string();
+  try {
+    if (pcl::io::savePCDFileBinaryCompressed(reference_path,
+                                            *input.target_cloud) == 0 &&
+        pcl::io::savePCDFileBinaryCompressed(query_path, aligned_query) == 0) {
+      LOG(INFO) << "Saved loop clouds to " << pair_dir;
+      return;
+    }
+    LOG(WARNING) << "Could not write loop clouds to " << pair_dir;
+  } catch (const pcl::IOException& exception) {
+    LOG(WARNING) << "Could not write loop clouds to " << pair_dir << ": "
+                 << exception.what();
+  }
+  std::filesystem::remove_all(pair_dir, error);
+}
+
+}  // namespace
 
 LoopClosing::LoopClosing(Options options) : options_(std::move(options)) {}
 
@@ -33,6 +110,10 @@ LoopClosing::~LoopClosing() {
 
 void LoopClosing::SetOptions(Options options) { options_ = std::move(options); }
 
+void LoopClosing::SetDescriptor(std::unique_ptr<LoopDescriptor> descriptor) {
+  descriptor_ = std::move(descriptor);
+}
+
 void LoopClosing::SetThreadPool(ThreadPoolInterface* thread_pool) {
     std::lock_guard<std::mutex> lock(match_mutex_);
     thread_pool_ = thread_pool;
@@ -43,30 +124,24 @@ void LoopClosing::ScheduleMatches(std::vector<LoopMatchInput> inputs) {
     CHECK(thread_pool_ != nullptr);
     CHECK(!done_callback_);
 
-    try {
-        for (const LoopMatchInput& input : inputs) {
-            match_results_.emplace_back(std::nullopt);
-            std::optional<LoopCandidate>* const result_slot = &match_results_.back();
+    for (const LoopMatchInput& input : inputs) {
+        match_results_.emplace_back(std::nullopt);
+        std::optional<LoopCandidate>* const result_slot = &match_results_.back();
 
-            auto match_task = std::make_unique<Task>();
-            match_task->SetWorkItem([this, input, result_slot]() {
-                try {
-                    *result_slot = ComputeMatch(input);
-                } catch (const std::exception& exception) {
-                    LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
-                               << input.candidate.idx2_ << ": " << exception.what();
-                } catch (...) {
-                    LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
-                               << input.candidate.idx2_ << " with an unknown exception";
-                }
-            });
+        auto match_task = std::make_unique<Task>();
+        match_task->SetWorkItem([this, input, result_slot]() {
+            try {
+                *result_slot = ComputeMatch(input);
+            } catch (const std::exception& exception) {
+                LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
+                           << input.candidate.idx2_ << ": " << exception.what();
+            } catch (...) {
+                LOG(FATAL) << "loop matching task failed for " << input.candidate.idx1_ << " -> "
+                           << input.candidate.idx2_ << " with an unknown exception";
+            }
+        });
 
-            finish_node_task_->AddDependency(thread_pool_->Schedule(std::move(match_task)));
-        }
-    } catch (const std::exception& exception) {
-        LOG(FATAL) << "failed to construct loop-match task dependencies: " << exception.what();
-    } catch (...) {
-        LOG(FATAL) << "failed to construct loop-match task dependencies";
+        finish_node_task_->AddDependency(thread_pool_->Schedule(std::move(match_task)));
     }
 }
 
@@ -122,16 +197,10 @@ void LoopClosing::RunWhenDoneCallback() {
         std::lock_guard<std::mutex> lock(match_mutex_);
         CHECK(done_callback_);
         done_callback = std::move(done_callback_);
-        try {
-            for (const auto& match : match_results_) {
-                if (match && match->ndt_score_ > options_.ndt_score_th_) {
-                    match_result.constraints.emplace_back(*match);
-                }
+        for (const auto& match : match_results_) {
+            if (match) {
+                match_result.constraints.emplace_back(*match);
             }
-        } catch (const std::exception& exception) {
-            LOG(FATAL) << "failed to collect loop-match results: " << exception.what();
-        } catch (...) {
-            LOG(FATAL) << "failed to collect loop-match results with an unknown exception";
         }
         LOG_IF(INFO, match_results_.size() > 0) << match_results_.size() 
             << " computations resulted in " << match_result.constraints.size() 
@@ -140,13 +209,7 @@ void LoopClosing::RunWhenDoneCallback() {
         done_callback_ = nullptr;
     }
 
-    try {
-        done_callback(std::move(match_result));
-    } catch (const std::exception& exception) {
-        LOG(FATAL) << "loop-match completion callback failed: " << exception.what();
-    } catch (...) {
-        LOG(FATAL) << "loop-match completion callback failed with an unknown exception";
-    }
+    done_callback(std::move(match_result));
 }
 
 std::vector<LoopCandidate> LoopClosing::ComputeConstraints(const Keyframe::Ptr& current,
@@ -160,7 +223,7 @@ std::vector<LoopCandidate> LoopClosing::ComputeConstraints(const Keyframe::Ptr& 
     successful_candidates.reserve(inputs.size());
     for (const auto& input : inputs) {
         const auto result = ComputeMatch(input);
-        if (result && result->ndt_score_ > options_.ndt_score_th_) {
+        if (result) {
             successful_candidates.emplace_back(*result);
         }
     }
@@ -176,18 +239,63 @@ std::vector<LoopMatchInput> LoopClosing::PrepareMatches(const Keyframe::Ptr& cur
         return {};
     }
 
-    const auto candidates = DetectLoopCandidates(current, keyframes);
-    if (options_.verbose_ && !candidates.empty()) {
-        LOG(INFO) << "lc: get kf " << current->GetID() << " candi: " << candidates.size();
+    // Descriptors process complete consecutive windows; geometry keeps its own cadence.
+    const int detection_interval =
+        descriptor_ ? options_.descriptor_submap_keyframes_ : options_.detection_interval_;
+    const bool first_keyframe = !has_received_keyframe_;
+    if (first_keyframe) {
+        has_received_keyframe_ = true;
+    } else {
+        ++keyframes_since_detection_;
+        if (keyframes_since_detection_ < detection_interval) {
+            return {};
+        }
+        keyframes_since_detection_ = 0;
     }
 
     std::vector<LoopMatchInput> inputs;
-    inputs.reserve(candidates.size());
-    for (const auto& candidate : candidates) {
-        const auto input = BuildMatchInput(keyframes, candidate);
-        if (input) {
-            inputs.emplace_back(*input);
+    if (descriptor_) {
+        const auto cloud = BuildDescriptorCloud(current, keyframes);
+        if (!cloud || cloud->empty()) {
+            return inputs;
         }
+        const auto& history = keyframes.GetAll();
+        const std::size_t query_index = keyframes.FindIndex(current->GetID());
+        const std::size_t window_size = std::min(
+            query_index + 1, static_cast<std::size_t>(options_.descriptor_submap_keyframes_));
+        const std::uint64_t gap = options_.descriptor_skip_near_num_;
+        const std::uint64_t query_id = current->GetID();
+        // Exclude recent IDs and every anchor sharing a source scan with query.
+        const std::uint64_t reference_id_limit = std::min<std::uint64_t>(
+            query_id > gap ? query_id - gap : 0,
+            history[query_index + 1 - window_size]->GetID());
+        const auto matches = descriptor_->DetectAndAdd(
+            cloud, current->GetLIOPose(), query_id, reference_id_limit);
+        for (const auto& match : matches) {
+            auto input = BuildMatchInput(keyframes, LoopCandidate(match.reference_id, query_id));
+            if (input) {
+                if (match.reference_from_query) {
+                    input->registration_guess =
+                        (input->reference_world_pose * *match.reference_from_query).matrix().cast<float>();
+                } else if (match.reference_from_query_rotation) {
+                    input->registration_rotation_guess =
+                        input->reference_world_pose.so3() * *match.reference_from_query_rotation;
+                }
+                inputs.emplace_back(std::move(*input));
+            }
+        }
+    } else if (!first_keyframe) {
+        const auto candidates = DetectLoopCandidates(current, keyframes);
+        inputs.reserve(candidates.size());
+        for (const auto& candidate : candidates) {
+            const auto input = BuildMatchInput(keyframes, candidate);
+            if (input) {
+                inputs.emplace_back(*input);
+            }
+        }
+    }
+    if (options_.verbose_ && !inputs.empty()) {
+        LOG(INFO) << "lc: get kf " << current->GetID() << " candi: " << inputs.size();
     }
     return inputs;
 }
@@ -201,17 +309,6 @@ std::vector<LoopCandidate> LoopClosing::DetectLoopCandidates(const Keyframe::Ptr
         return lhs >= rhs ? static_cast<std::uint64_t>(lhs - rhs)
                           : static_cast<std::uint64_t>(rhs - lhs);
     };
-
-    if (last_loop_kf_ == nullptr) {
-        last_loop_kf_ = current;
-        return candidates;
-    }
-
-    ++keyframes_since_detection_;
-    if (keyframes_since_detection_ < options_.detection_interval_) {
-        return candidates;
-    }
-    keyframes_since_detection_ = 0;
 
     for (const auto& keyframe : keyframe_list) {
         if (keyframe->GetID() == current->GetID()) {
@@ -234,21 +331,38 @@ std::vector<LoopCandidate> LoopClosing::DetectLoopCandidates(const Keyframe::Ptr
         const double distance_2d = delta.head<2>().norm();
         if (distance_2d < options_.max_range_) {
             LoopCandidate candidate(keyframe->GetID(), current->GetID());
-            candidate.Tij_ = keyframe->GetLIOPose().inverse() * current->GetLIOPose();
             candidates.emplace_back(candidate);
             check_first = keyframe;
         }
     }
 
-    if (!candidates.empty()) {
-        last_loop_kf_ = current;
-    }
-
-    if (options_.verbose_ && !candidates.empty()) {
-        LOG(INFO) << "lc candi: " << candidates.size();
-    }
-
     return candidates;
+}
+
+CloudConstPtr LoopClosing::BuildDescriptorCloud(
+    const Keyframe::Ptr& anchor, const KeyframeCollection& keyframes) const {
+  const auto& history = keyframes.GetAll();
+  const std::size_t anchor_index = keyframes.FindIndex(anchor->GetID());
+  if (anchor_index == history.size()) {
+    return nullptr;
+  }
+  const std::size_t window_size = std::min(
+      anchor_index + 1, static_cast<std::size_t>(options_.descriptor_submap_keyframes_));
+  const SE3 anchor_from_local = anchor->GetLIOPose().inverse();
+  CloudPtr accumulated(new PointCloudType);
+  for (std::size_t i = anchor_index + 1 - window_size; i <= anchor_index; ++i) {
+    const auto cloud = history[i]->GetCloud();
+    if (!cloud || cloud->empty()) {
+      continue;
+    }
+    CloudPtr local_cloud(new PointCloudType);
+    pcl::transformPointCloud(*cloud, *local_cloud, history[i]->GetLIOPose().matrix());
+    const auto sampled = VoxelGrid(local_cloud, options_.descriptor_downsample_resolution_);
+    PointCloudType transformed;
+    pcl::transformPointCloud(*sampled, transformed, anchor_from_local.matrix());
+    *accumulated += transformed;
+  }
+  return accumulated;
 }
 
 std::optional<LoopMatchInput> LoopClosing::BuildMatchInput(const KeyframeCollection& keyframes,
@@ -277,7 +391,7 @@ std::optional<LoopMatchInput> LoopClosing::BuildMatchInput(const KeyframeCollect
             }
 
             const auto& keyframe = keyframe_list[keyframe_index];
-            const CloudPtr cloud = keyframe->GetCloud();
+            const auto cloud = keyframe->GetCloud();
             if (!cloud || cloud->empty()) {
                 continue;
             }
@@ -294,8 +408,17 @@ std::optional<LoopMatchInput> LoopClosing::BuildMatchInput(const KeyframeCollect
         return submap;
     };
 
-    const CloudPtr submap_keyframe1 = build_submap(keyframe1->GetID(), true);
-    const CloudPtr submap_keyframe2 = keyframe2->GetCloud();
+    CloudPtr submap_keyframe1;
+    if (descriptor_) {
+        // Rebuild the same causal geometry used by descriptor extraction, then
+        // place the complete reference window using its optimized anchor pose.
+        const auto reference_cloud = BuildDescriptorCloud(keyframe1, keyframes);
+        submap_keyframe1 = std::make_shared<PointCloudType>();
+        pcl::transformPointCloud(*reference_cloud, *submap_keyframe1, keyframe1->GetOptPose().matrix());
+    } else {
+        submap_keyframe1 = build_submap(keyframe1->GetID(), true);
+    }
+    const auto submap_keyframe2 = keyframe2->GetCloud();
     if (!submap_keyframe2 || submap_keyframe1->empty() || submap_keyframe2->empty()) {
         return std::nullopt;
     }
@@ -316,10 +439,20 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
     }
 
     LoopCandidate candidate = input.candidate;
-    Mat4f target_pose = input.initial_source_world_pose;
-    /// 不同分辨率下的匹配
+    Mat4f target_pose = input.registration_guess.value_or(input.initial_source_world_pose);
+    if (!input.registration_guess && input.registration_rotation_guess) {
+        target_pose.block<3, 3>(0, 0) = input.registration_rotation_guess->matrix().cast<float>();
+        // Start at the retrieved place; NDT estimates the remaining offset.
+        target_pose.block<3, 1>(0, 3) =
+            input.reference_world_pose.translation().cast<float>();
+    }
+    double ndt_score = 0.0;
+    bool converged = false;
+    // A complete descriptor pose needs local refinement; other inputs retain coarse search.
     CloudPtr output(new PointCloudType);
-    const std::vector<double> resolutions{10.0, 5.0, 2.0, 1.0};
+    const std::vector<double> resolutions = input.registration_guess
+                                              ? std::vector<double>{1.0}
+                                              : std::vector<double>{10.0, 5.0, 2.0, 1.0};
 
     CloudPtr rough_map1;
     CloudPtr rough_map2;
@@ -336,22 +469,64 @@ std::optional<LoopCandidate> LoopClosing::ComputeMatch(const LoopMatchInput& inp
         ndt.setInputSource(rough_map2);
 
         ndt.align(*output, target_pose);
+        converged = ndt.hasConverged();
         target_pose = ndt.getFinalTransformation();
-        candidate.ndt_score_ = ndt.getTransformationProbability();
-        if (!target_pose.allFinite() || !std::isfinite(candidate.ndt_score_)) {
+        ndt_score = ndt.getTransformationProbability();
+        if (!target_pose.allFinite() || !std::isfinite(ndt_score)) {
             return std::nullopt;
         }
     }
-
-    const Mat4d transformation = target_pose.cast<double>();
-    if (!transformation.allFinite()) {
+    // check if the loop candidate passes the geometry checks and the NDT score threshold
+    if (!converged || ndt_score <= options_.ndt_score_th_ ||
+        !PassesGeometryChecks(input, target_pose)) {
         return std::nullopt;
     }
+
+    const Mat4d transformation = target_pose.cast<double>();
     Quatd quaternion(transformation.block<3, 3>(0, 0));
     quaternion.normalize();
     const Vec3d translation = transformation.block<3, 1>(0, 3);
     candidate.Tij_ = input.reference_world_pose.inverse() * SE3(quaternion, translation);
+    if (!options_.loop_cloud_dir_.empty()) {
+        SaveLoopClouds(options_.loop_cloud_dir_, input, target_pose);
+    }
     return candidate;
+}
+
+bool LoopClosing::PassesGeometryChecks(const LoopMatchInput& input, const Mat4f& final_pose) const {
+  pcl::KdTreeFLANN<PointType> tree;
+  tree.setInputCloud(input.target_cloud);
+  const auto final = EvaluateGeometry(tree, *input.source_cloud, final_pose);
+  const double final_rmse = std::sqrt(final.mean_squared_error);
+
+  // Compare gravity in IMU axes: installation tilt and world yaw are unrestricted.
+  const Vec3d initial_gravity =
+      input.initial_source_world_pose.block<3, 3>(0, 0).cast<double>().transpose() * Vec3d::UnitZ();
+  const Vec3d final_gravity = final_pose.block<3, 3>(0, 0).cast<double>().transpose() * Vec3d::UnitZ();
+  const double gravity_direction_change_deg =
+      std::acos(std::clamp(initial_gravity.normalized().dot(final_gravity.normalized()), -1.0, 1.0)) *
+      180.0 / M_PI;
+  const bool accepted = final.overlap_ratio >= options_.min_overlap_ratio_ &&
+                        final_rmse <= options_.max_registration_rmse_ &&
+                        gravity_direction_change_deg <= options_.max_gravity_direction_change_deg_;
+  if (!accepted && options_.verbose_) {
+    const auto initial =
+        EvaluateGeometry(tree, *input.source_cloud, input.initial_source_world_pose);
+    const double initial_rmse = std::sqrt(initial.mean_squared_error);
+    LOG(INFO) << "Rejected loop " << input.candidate.idx1_ << " -> "
+              << input.candidate.idx2_
+              << ": overlap=" << final.overlap_ratio
+              << ", correspondence RMS=" << initial_rmse
+              << " -> " << final_rmse << " m, gravity direction change="
+              << gravity_direction_change_deg << " deg";
+  } else if (options_.verbose_) {
+    LOG(INFO) << "Accepted loop " << input.candidate.idx1_ << " -> "
+              << input.candidate.idx2_ << ": overlap=" << final.overlap_ratio
+              << ", correspondence RMS=" << final_rmse
+              << " m, gravity direction change="
+              << gravity_direction_change_deg << " deg";
+  }
+  return accepted;
 }
 
 }  // namespace lightning

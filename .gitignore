@@ -7,6 +7,10 @@
 **/.vscode/
 bin
 tests
+!tests/
+tests/*
+!tests/loop_closure_test.cc
+!tests/run_loop_closure_checks.py
 
 **cmake-build-debug**
 **cmake-build-release**

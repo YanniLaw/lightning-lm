@@ -10,10 +10,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "common/keyframe.h"
 #include "common/loop_candidate.h"
+#include "core/descriptor/loop_descriptor.h"
 #include "core/loop_closing/loop_match_data.h"
 #include "utils/task.h"
 
@@ -35,12 +37,21 @@ class LoopClosing {
         Options() {}
 
         bool verbose_ = true;
+        std::string descriptor_type_ = "none";
+        int descriptor_submap_keyframes_ = 10;  // Accumulation and detection window.
+        double descriptor_downsample_resolution_ = 0.25;
+        int descriptor_skip_near_num_ = 50;  // Backend keyframe ID gap.
 
-        int detection_interval_ = 20;
+        int detection_interval_ = 20;  // Geometric search only.
         int min_id_interval_ = 20;
         int closest_id_th_ = 50;
         double max_range_ = 30.0;
         double ndt_score_th_ = 1.0;
+        double min_overlap_ratio_ = 0.7;
+        // RMS in meters over correspondences within 0.5 m.
+        double max_registration_rmse_ = 0.15;
+        double max_gravity_direction_change_deg_ = 2.0;
+        std::string loop_cloud_dir_;
     };
 
     explicit LoopClosing(Options options = Options());
@@ -51,6 +62,9 @@ class LoopClosing {
 
     // Applies configuration before the first constraint computation.
     void SetOptions(Options options);
+
+    // Installs the selected descriptor before processing any keyframes.
+    void SetDescriptor(std::unique_ptr<LoopDescriptor> descriptor);
 
     // Computes valid loop constraints synchronously for one keyframe.
     std::vector<LoopCandidate> ComputeConstraints(const Keyframe::Ptr& current,
@@ -90,10 +104,16 @@ class LoopClosing {
     std::optional<LoopMatchInput> BuildMatchInput(const KeyframeCollection& keyframes,
                                                   const LoopCandidate& candidate) const;
 
+    CloudConstPtr BuildDescriptorCloud(const Keyframe::Ptr& anchor,
+                                      const KeyframeCollection& keyframes) const;
+
     void RunWhenDoneCallback();
 
+    bool PassesGeometryChecks(const LoopMatchInput& input, const Mat4f& final_pose) const;
+
     Options options_;
-    Keyframe::Ptr last_loop_kf_;
+    std::unique_ptr<LoopDescriptor> descriptor_;
+    bool has_received_keyframe_ = false;
     int keyframes_since_detection_ = 0;
 
     mutable std::mutex match_mutex_;

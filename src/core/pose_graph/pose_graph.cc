@@ -11,14 +11,55 @@
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <iomanip>
 #include <unordered_map>
 #include <utility>
 
 #include "core/lio/lio_result_conversion.h"
+#include "core/descriptor/descriptor_factory.h"
 #include "core/optimization/optimizer_factory.h"
 #include "utils/thread_pool.h"
 
 namespace lightning {
+namespace {
+
+bool LoadDescriptorOptions(const YAML::Node& config, LoopClosing::Options* options) {
+  try {
+    const YAML::Node loop_config = config ? config["loop_closing"] : YAML::Node();
+    if (loop_config && loop_config["descriptor_type"]) {
+      options->descriptor_type_ = loop_config["descriptor_type"].as<std::string>();
+    }
+    if (options->descriptor_type_ == "none") {
+      return true;
+    }
+    const YAML::Node descriptors = config ? config["descriptor"] : YAML::Node();
+    const YAML::Node node =
+        descriptors ? descriptors[options->descriptor_type_] : YAML::Node();
+    if (node) {
+      if (node["sub_frame_num"]) {
+        options->descriptor_submap_keyframes_ = node["sub_frame_num"].as<int>();
+      }
+      if (node["ds_size"]) {
+        options->descriptor_downsample_resolution_ = node["ds_size"].as<double>();
+      }
+      if (node["skip_near_num"]) {
+        options->descriptor_skip_near_num_ = node["skip_near_num"].as<int>();
+      }
+    }
+  } catch (const YAML::Exception& exception) {
+    LOG(ERROR) << "invalid loop descriptor configuration: " << exception.what();
+    return false;
+  }
+  if (options->descriptor_submap_keyframes_ < 1 || options->descriptor_skip_near_num_ < 0 ||
+      !std::isfinite(options->descriptor_downsample_resolution_) ||
+      options->descriptor_downsample_resolution_ <= 0.0) {
+    LOG(ERROR) << "invalid common loop descriptor settings";
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 PoseGraph::PoseGraph(Options options) : options_(std::move(options)) {}
 
@@ -40,14 +81,15 @@ bool PoseGraph::Init(const std::string& yaml_path) {
         options_.optimizer_type_ = system_config["optimizer_type"].as<std::string>();
     }
 
+    auto& loop_options = options_.loop_closing_;
     const YAML::Node loop_config = config["loop_closing"];
     if (loop_config) {
         if (loop_config["loop_kf_gap"]) {
             // Keep accepting the legacy key as an alias for detection_interval.
-            options_.detection_interval_ = loop_config["loop_kf_gap"].as<int>();
+            loop_options.detection_interval_ = loop_config["loop_kf_gap"].as<int>();
         }
         if (loop_config["detection_interval"]) {
-            options_.detection_interval_ = loop_config["detection_interval"].as<int>();
+            loop_options.detection_interval_ = loop_config["detection_interval"].as<int>();
         }
         if (loop_config["optimize_every_n_nodes"]) {
             options_.optimize_every_n_nodes_ = loop_config["optimize_every_n_nodes"].as<int>();
@@ -56,37 +98,69 @@ bool PoseGraph::Init(const std::string& yaml_path) {
             options_.num_threads_ = loop_config["num_threads"].as<int>();
         }
         if (loop_config["min_id_interval"]) {
-            options_.min_id_interval_ = loop_config["min_id_interval"].as<int>();
+            loop_options.min_id_interval_ = loop_config["min_id_interval"].as<int>();
         }
         if (loop_config["closest_id_th"]) {
-            options_.closest_id_th_ = loop_config["closest_id_th"].as<int>();
+            loop_options.closest_id_th_ = loop_config["closest_id_th"].as<int>();
         }
         if (loop_config["max_range"]) {
-            options_.max_range_ = loop_config["max_range"].as<double>();
+            loop_options.max_range_ = loop_config["max_range"].as<double>();
         }
         if (loop_config["ndt_score_th"]) {
-            options_.ndt_score_th_ = loop_config["ndt_score_th"].as<double>();
+            loop_options.ndt_score_th_ = loop_config["ndt_score_th"].as<double>();
+        }
+        if (loop_config["min_overlap_ratio"]) {
+            loop_options.min_overlap_ratio_ = loop_config["min_overlap_ratio"].as<double>();
+        }
+        if (loop_config["max_registration_rmse"]) {
+            loop_options.max_registration_rmse_ = loop_config["max_registration_rmse"].as<double>();
+        }
+        if (loop_config["max_gravity_direction_change_deg"]) {
+            loop_options.max_gravity_direction_change_deg_ =
+                loop_config["max_gravity_direction_change_deg"].as<double>();
+        }
+        if (loop_config["loop_cloud_dir"]) {
+            loop_options.loop_cloud_dir_ =
+                loop_config["loop_cloud_dir"].as<std::string>();
         }
         if (loop_config["with_height"]) {
             options_.with_height_ = loop_config["with_height"].as<bool>();
         }
     }
 
+    if (options_.enable_loop_closing_ && !LoadDescriptorOptions(config, &loop_options)) {
+        LOG(ERROR) << "Failed to load descriptor options";
+        return false;
+    }
     if (options_.num_threads_ <= 0 || options_.optimize_every_n_nodes_ <= 0 ||
-        (options_.enable_loop_closing_ && options_.detection_interval_ <= 0)) {
+        (options_.enable_loop_closing_ && loop_options.descriptor_type_ == "none" &&
+         loop_options.detection_interval_ <= 0)) {
         LOG(ERROR) << "invalid pose graph scheduling options";
+        return false;
+    }
+    if (options_.enable_loop_closing_ &&
+        (!std::isfinite(loop_options.min_overlap_ratio_) || loop_options.min_overlap_ratio_ < 0.0 ||
+         loop_options.min_overlap_ratio_ > 1.0 || !std::isfinite(loop_options.max_registration_rmse_) ||
+         loop_options.max_registration_rmse_ <= 0.0 ||
+         !std::isfinite(loop_options.max_gravity_direction_change_deg_) ||
+         loop_options.max_gravity_direction_change_deg_ <= 0.0 ||
+         loop_options.max_gravity_direction_change_deg_ > 180.0)) {
+        LOG(ERROR) << "invalid loop geometry thresholds";
         return false;
     }
 
     if (options_.enable_loop_closing_) {
-        LoopClosing::Options loop_options;
+        const YAML::Node descriptor_config =
+            loop_options.descriptor_type_ != "none" ? config["descriptor"] : YAML::Node();
+        auto descriptor = CreateLoopDescriptor(loop_options.descriptor_type_, descriptor_config);
+        if (loop_options.descriptor_type_ != "none" && !descriptor) {
+            LOG(ERROR) << "Failed to create loop descriptor";
+            return false;
+        }
         loop_options.verbose_ = options_.verbose_;
-        loop_options.detection_interval_ = options_.detection_interval_;
-        loop_options.min_id_interval_ = options_.min_id_interval_;
-        loop_options.closest_id_th_ = options_.closest_id_th_;
-        loop_options.max_range_ = options_.max_range_;
-        loop_options.ndt_score_th_ = options_.ndt_score_th_;
         loop_closing_.SetOptions(loop_options);
+        loop_closing_.SetDescriptor(std::move(descriptor));
+        LOG(INFO) << "loop descriptor: " << loop_options.descriptor_type_;
 
         optimizer_ = CreateGraphOptimizer(options_.optimizer_type_);
         if (!optimizer_) {
@@ -140,9 +214,9 @@ Keyframe::Ptr PoseGraph::AddKeyframe(const LIOResult& result) {
             return nullptr;
         }
 
-        auto cloud = std::make_shared<PointCloudType>(*result.cloud);
-        keyframe = std::make_shared<Keyframe>(static_cast<unsigned long>(next_keyframe_id_++), cloud, state);
+        keyframe = std::make_shared<Keyframe>(static_cast<unsigned long>(next_keyframe_id_++), result.cloud, state);
         last_accepted_timestamp_ = result.state.timestamp;
+
 
         // Keep acceptance and queue insertion in one critical section.  This
         // prevents Stop() from placing its flush barrier before a keyframe
@@ -167,7 +241,7 @@ std::vector<KeyframeMapEntry> PoseGraph::GetMapSnapshot() const {
         KeyframeMapEntry entry;
         entry.id = keyframe->GetID();
         entry.timestamp = keyframe->GetState().timestamp_;
-        entry.cloud = std::make_shared<const PointCloudType>(*keyframe->GetCloud());
+        entry.cloud = keyframe->GetCloud();
         entry.lio_pose = keyframe->GetLIOPose();
         entry.optimized_pose = keyframe->GetOptPose();
         snapshot.emplace_back(std::move(entry));
@@ -176,45 +250,46 @@ std::vector<KeyframeMapEntry> PoseGraph::GetMapSnapshot() const {
 }
 
 bool PoseGraph::FlushAndGetMapSnapshot(std::vector<KeyframeMapEntry>* snapshot) {
-    if (snapshot == nullptr || !initialized_) {
+    if (snapshot == nullptr) {
+        return false;
+    }
+    return Flush(snapshot);
+}
+
+bool PoseGraph::Flush(std::vector<KeyframeMapEntry>* snapshot) {
+    if (!initialized_) {
         return false;
     }
 
     std::lock_guard<std::mutex> flush_lock(flush_mutex_);
     if (stopped_.load()) {
-        *snapshot = GetMapSnapshot();
+        if (snapshot != nullptr) {
+            *snapshot = GetMapSnapshot();
+        }
         return true;
     }
 
     const auto flush_state = std::make_shared<FlushState>();
-    AddWorkItem([this, flush_state]() {
+    AddWorkItem([this, flush_state, snapshot]() {
         // Insert the completion before any work accepted after this barrier.
         // DrainWorkQueue resumes it only after WhenDone and optimization finish.
-        try {
-            std::lock_guard<std::mutex> lock(work_queue_mutex_);
-            work_queue_->push_front({std::chrono::steady_clock::now(), [this, flush_state]() {
-                                         std::vector<KeyframeMapEntry> map_snapshot;
-                                         try {
-                                             map_snapshot = GetMapSnapshot();
-                                         } catch (const std::exception& exception) {
-                                             LOG(FATAL) << "failed to create map snapshot: " << exception.what();
-                                         } catch (...) {
-                                             LOG(FATAL) << "failed to create map snapshot with an unknown exception";
-                                         }
-                                         CompleteFlush(flush_state, std::move(map_snapshot));
-                                         return WorkItem::Result::kDoNotRunOptimization;
-                                     }});
-        } catch (const std::exception& exception) {
-            LOG(FATAL) << "failed to enqueue pose graph flush completion: " << exception.what();
-        } catch (...) {
-            LOG(FATAL) << "failed to enqueue pose graph flush completion with an unknown exception";
-        }
+        std::lock_guard<std::mutex> lock(work_queue_mutex_);
+        work_queue_->push_front({std::chrono::steady_clock::now(), [this, flush_state, snapshot]() {
+                                     std::vector<KeyframeMapEntry> map_snapshot;
+                                     if (snapshot != nullptr) {
+                                         map_snapshot = GetMapSnapshot();
+                                     }
+                                     CompleteFlush(flush_state, std::move(map_snapshot));
+                                     return WorkItem::Result::kDoNotRunOptimization;
+                                 }});
         return WorkItem::Result::kRunOptimization;
     });
 
     std::unique_lock<std::mutex> lock(flush_state->mutex);
     flush_state->condition.wait(lock, [&flush_state]() { return flush_state->done; });
-    *snapshot = std::move(flush_state->snapshot);
+    if (snapshot != nullptr) {
+        *snapshot = std::move(flush_state->snapshot);
+    }
     return true;
 }
 
@@ -236,9 +311,8 @@ void PoseGraph::Stop() {
         accepting_.store(false);
     }
 
-    std::vector<KeyframeMapEntry> ignored_snapshot;
     try {
-        FlushAndGetMapSnapshot(&ignored_snapshot);
+        Flush(nullptr);
     } catch (const std::exception& exception) {
         LOG(FATAL) << "pose graph final flush failed: " << exception.what();
     } catch (...) {
@@ -303,24 +377,27 @@ void PoseGraph::DrainWorkQueue() {
 }
 
 WorkItem::Result PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
-    std::vector<LoopMatchInput> inputs;
     DataCallback data_callback;
     PoseGraphDataPtr data_snapshot;
     bool should_optimize = false;
     {
         std::lock_guard<std::mutex> lock(graph_mutex_);
-        if (!keyframe || !initialized_) {
-            return WorkItem::Result::kDoNotRunOptimization;
-        }
         keyframe->SetOptPose(map_from_local_ * keyframe->GetLIOPose());
         keyframes_.Add(keyframe);
         if (!AddKeyframeToGraph(keyframe)) {
             LOG(FATAL) << "failed to add keyframe to pose graph: " << keyframe->GetID();
         }
 
-        if (options_.enable_loop_closing_) {
-            inputs = loop_closing_.PrepareMatches(keyframe, keyframes_);
+        if (options_.verbose_) {
+            LOG(INFO) << "Add keyframe " << keyframe->GetID()
+                      << ", pos: [" << std::setprecision(3)
+                      << keyframe->GetLIOPose().translation().transpose()
+                      << " ], time: " << std::fixed << std::setprecision(4)
+                      << keyframe->GetState().timestamp_
+                      << ", points: " << keyframe->GetCloud()->size();
+
         }
+
         ++unoptimized_nodes_;
         data_callback = data_callback_;
         if (data_callback) {
@@ -331,6 +408,9 @@ WorkItem::Result PoseGraph::HandleKeyframe(const Keyframe::Ptr& keyframe) {
     }
 
     if (options_.enable_loop_closing_) {
+        // Keyframes and poses are stable within this serial work item. Keep
+        // descriptor preparation outside the mutex used by map snapshots.
+        auto inputs = loop_closing_.PrepareMatches(keyframe, keyframes_);
         loop_closing_.ScheduleMatches(std::move(inputs));
         loop_closing_.NotifyEndOfNode();
     }
@@ -355,14 +435,10 @@ void PoseGraph::HandleWorkQueue(LoopClosing::MatchResult result) {
     bool optimized = false;
     std::size_t loop_count = 0;
 
-    try {
+    {
         std::lock_guard<std::mutex> lock(graph_mutex_);
         AddLoopConstraints(result.constraints);
-        if (graph_dirty_ && optimizer_) {
-            optimized = OptimizeGraph();
-        } else {
-            graph_dirty_ = false;
-        }
+        optimized = OptimizeGraph();
 
         loop_count = loop_constraints_.size();
         optimized_callback = optimized_callback_;
@@ -370,10 +446,6 @@ void PoseGraph::HandleWorkQueue(LoopClosing::MatchResult result) {
         if (data_callback && optimized) {
             data_snapshot = CreateDataSnapshot(true);
         }
-    } catch (const std::exception& exception) {
-        LOG(FATAL) << "pose graph work-queue completion failed: " << exception.what();
-    } catch (...) {
-        LOG(FATAL) << "pose graph work-queue completion failed with an unknown exception";
     }
 
     if (optimized && optimized_callback) {
@@ -405,9 +477,6 @@ void PoseGraph::HandleWorkQueue(LoopClosing::MatchResult result) {
 
 void PoseGraph::CompleteFlush(const std::shared_ptr<FlushState>& flush_state,
                               std::vector<KeyframeMapEntry> snapshot) {
-    if (!flush_state) {
-        return;
-    }
     {
         std::lock_guard<std::mutex> lock(flush_state->mutex);
         flush_state->snapshot = std::move(snapshot);
@@ -417,7 +486,7 @@ void PoseGraph::CompleteFlush(const std::shared_ptr<FlushState>& flush_state,
 }
 
 bool PoseGraph::AddKeyframeToGraph(const Keyframe::Ptr& current) {
-    if (!current || !optimizer_) {
+    if (!optimizer_) {
         return true;
     }
 
@@ -460,16 +529,12 @@ bool PoseGraph::AddKeyframeToGraph(const Keyframe::Ptr& current) {
     return true;
 }
 
-std::size_t PoseGraph::AddLoopConstraints(const std::vector<LoopCandidate>& constraints) {
+void PoseGraph::AddLoopConstraints(const std::vector<LoopCandidate>& constraints) {
     if (!optimizer_) {
-        return 0;
+        return;
     }
 
-    std::size_t valid_loop_count = 0;
     for (const auto& constraint : constraints) {
-        if (!std::isfinite(constraint.ndt_score_) || constraint.ndt_score_ <= options_.ndt_score_th_) {
-            continue;
-        }
         const auto pair = std::make_pair(constraint.idx1_, constraint.idx2_);
         if (loop_pairs_.count(pair) != 0U) {
             continue;
@@ -490,12 +555,8 @@ std::size_t PoseGraph::AddLoopConstraints(const std::vector<LoopCandidate>& cons
         loop_constraints_.push_back(PoseGraphConstraint{loop.id, static_cast<unsigned long>(loop.from_id),
                                                         static_cast<unsigned long>(loop.to_id), false});
         loop_pairs_.insert(pair);
-        ++valid_loop_count;
-    }
-    if (valid_loop_count > 0U) {
         graph_dirty_ = true;
     }
-    return valid_loop_count;
 }
 
 bool PoseGraph::OptimizeGraph() {

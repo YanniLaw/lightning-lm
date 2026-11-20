@@ -34,6 +34,7 @@ class MiaoOptimizer final : public GraphOptimizer {
     struct LoopEdge {
         std::uint64_t id = 0;
         std::shared_ptr<miao::EdgeSE3> edge;
+        bool is_outlier = false;
     };
 
     bool IsValidPose(const SE3& pose) const;

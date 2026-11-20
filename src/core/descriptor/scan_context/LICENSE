@@ -1,0 +1,10 @@
+Scan Context upstream copyright: KAIST and Naver Labs.
+
+The upstream README states that all Scan Context code is licensed under the
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International license.
+Source: https://github.com/gisbi-kim/scancontext/tree/93672835bb85e9c03fedf0fbaf2d0491df12161e
+Upstream notice: https://github.com/gisbi-kim/scancontext/blob/93672835bb85e9c03fedf0fbaf2d0491df12161e/README.md#license
+License text: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+KDTreeVectorOfVectorsAdaptor.h and nanoflann.hpp contain separate BSD license
+notices. Those notices remain in the corresponding unmodified headers.

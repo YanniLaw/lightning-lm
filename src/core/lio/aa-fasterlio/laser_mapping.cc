@@ -647,8 +647,8 @@ bool LaserMapping::SelectKeyframe() {
         return false;
     }
 
-    LOG(INFO) << "Add keyframe, state: " << state_point_.pos_.transpose()
-              << ", time: " << std::setprecision(14) << state_point_.timestamp_;
+    // LOG(INFO) << "Add keyframe, state: " << state_point_.pos_.transpose()
+    //           << ", time: " << std::setprecision(14) << state_point_.timestamp_;
 
     // 有keyframes时更新local map
     Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
